@@ -1,0 +1,844 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Laboratorio di Prompting — Campo 2026</title>
+<style>
+  /* --- Pagina leggera per browser kiosk su Raspberry Pi 3 / 1 GB ----------- *
+   * Zero CDN, zero richieste esterne, font di sistema. Un solo file.        *
+   * Wizard a step: Intro + 5 tappe, ognuna con la sua "toolbox" di dialogo   *
+   * con l'LLM (tranne la tappa 4, che usa il workflow strutturato).          */
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-2: #1f232c;
+    --ink: #e8eaed;
+    --dim: #9aa0aa;
+    --accent: #6ea8fe;
+    --accent-2: #7ee2a8;
+    --warn: #ffce6b;
+    --bad: #ffb4b4;
+    --line: #2a2f3a;
+    --radius: 12px;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 18px/1.55 -apple-system, "Segoe UI", Roboto, "DejaVu Sans", Helvetica, Arial, sans-serif;
+    padding: 0 16px 64px;
+  }
+  header { max-width: 860px; margin: 0 auto; padding: 24px 0 8px; }
+  header h1 { font-size: 1.9rem; margin: 0 0 4px; letter-spacing: -0.01em; }
+  header .sub { color: var(--dim); font-size: .98rem; }
+  main { max-width: 860px; margin: 0 auto; }
+
+  /* --- Stepper + banner ------------------------------------------------ */
+  .stepper { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 8px 0 12px; }
+  .step-dot {
+    background: var(--panel); border: 1px solid var(--line); color: var(--dim);
+    border-radius: 999px; padding: 6px 12px; cursor: pointer; font-size: .92rem;
+  }
+  .step-dot:hover { border-color: var(--accent); }
+  .step-dot.active { background: var(--accent); color: #0f1115; border-color: var(--accent); font-weight: 700; }
+  .step-dot.done { color: var(--accent-2); border-color: var(--accent-2); }
+  #model-banner {
+    padding: 10px 14px; border-radius: 10px; margin-bottom: 14px; font-size: .95rem;
+    border: 1px solid var(--line); background: var(--panel);
+  }
+  #model-banner.ok { border-color: var(--accent-2); color: var(--accent-2); }
+  #model-banner.warn { border-color: var(--warn); color: var(--warn); }
+  #model-banner.check { color: var(--dim); }
+
+  /* --- Step + teoria --------------------------------------------------- */
+  .step { display: none; }
+  .step.active { display: block; animation: pop .2s ease; }
+  @keyframes pop { from { opacity: 0; } to { opacity: 1; } }
+  h2 { font-size: 1.25rem; margin: 4px 0 8px; color: var(--accent); }
+  h3 { font-size: 1.02rem; margin: 14px 0 6px; }
+  p { margin: 8px 0; }
+  .obiettivo { padding: 12px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); margin: 10px 0; }
+  .obiettivo b { color: var(--accent-2); }
+  code { background: var(--panel-2); padding: 1px 6px; border-radius: 6px; font-size: .9em; }
+  .hint { color: var(--dim); font-size: .94rem; background: var(--panel-2); border-left: 3px solid var(--accent); padding: 8px 12px; border-radius: 6px; margin: 10px 0; }
+  .grid { display: grid; gap: 12px; }
+  @media (min-width: 720px) { .grid { grid-template-columns: 1fr 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; }
+  .card h3 { margin-top: 0; }
+  .card.rule { border-color: var(--warn); }
+  .card.rule h3 { color: var(--warn); }
+  ol.tappe { list-style: none; counter-reset: tappa; margin: 0; padding: 0; }
+  ol.tappe li { counter-increment: tappa; position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 16px 12px 50px; margin: 8px 0; }
+  ol.tappe li::before { content: counter(tappa); position: absolute; left: 12px; top: 12px; width: 28px; height: 28px; border-radius: 50%; background: var(--accent); color: #0f1115; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+
+  /* --- Form comuni ----------------------------------------------------- */
+  textarea, input[type=text] {
+    width: 100%; background: var(--panel-2); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 8px; padding: 9px; font: inherit; resize: vertical;
+  }
+  textarea:focus, input[type=text]:focus { outline: 2px solid var(--accent); }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+  button {
+    font: inherit; font-weight: 600; cursor: pointer; background: var(--accent); color: #0f1115;
+    border: 0; border-radius: 8px; padding: 9px 16px;
+  }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button.ghost { background: var(--panel-2); color: var(--ink); border: 1px solid var(--line); }
+  .preset { background: var(--panel); color: var(--ink); border: 1px solid var(--line); font-size: .9rem; padding: 6px 10px; }
+
+  /* --- Toolbox chat ---------------------------------------------------- */
+  .chat-toolbox { border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); padding: 12px; margin-top: 10px; }
+  .chat-toolbox.disabled { opacity: .5; pointer-events: none; }
+  .chat-log { max-height: 230px; overflow-y: auto; padding: 4px 2px; margin-bottom: 8px; }
+  .chat-msg { padding: 7px 11px; border-radius: 10px; margin: 5px 0; max-width: 88%; white-space: pre-wrap; word-wrap: break-word; }
+  .chat-msg.me { background: var(--accent); color: #0f1115; margin-left: auto; text-align: left; }
+  .chat-msg.ia { background: var(--panel-2); border: 1px solid var(--line); }
+  .chat-msg.err { background: #2a1a1a; border: 1px solid #5a2a2a; color: var(--bad); }
+  .chat-msg.note { color: var(--dim); font-size: .85rem; padding: 1px 11px; }
+  .chat-spinner { color: var(--dim); padding: 4px 2px; }
+  .chat-spinner::after { content: " …"; }
+  .chat-input { display: flex; gap: 8px; align-items: flex-end; }
+  .chat-input textarea { min-height: 120px; }
+  .chat-input button { flex-shrink: 0; }
+
+  /* --- Tab (tappa ①) + contatore contesto + blob (tappa ②) ------------- */
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 12px 0 0; }
+  .tab-btn {
+    background: var(--panel); border: 1px solid var(--line); color: var(--dim);
+    border-radius: 999px; padding: 7px 14px; font-size: .94rem; cursor: pointer;
+  }
+  .tab-btn.active { background: var(--accent-2); color: #0f1115; border-color: var(--accent-2); font-weight: 700; }
+  .tab-pane { display: none; }
+  .tab-pane.active { display: block; }
+  .ctx-meter { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .ctx-bar { flex: 1; height: 8px; background: var(--panel-2); border-radius: 6px; overflow: hidden; }
+  .ctx-fill { height: 100%; width: 0%; background: var(--accent-2); transition: width .3s; }
+  .ctx-fill.warn { background: var(--warn); }
+  .ctx-fill.full { background: var(--bad); }
+  .ctx-label { color: var(--dim); font-size: .88rem; white-space: nowrap; }
+  .ctx-label b { color: var(--ink); }
+  .ctx-reset { font-size: .8rem; padding: 4px 10px; }
+  .chat-limits { color: var(--dim); font-size: .8rem; margin-top: 6px; }
+  #blob, #blob3 { border: 1px dashed var(--line); border-radius: var(--radius); background: var(--panel-2); padding: 10px 14px; margin: 10px 0 0; }
+  #blob .blob-title, #blob3 .blob-title { color: var(--dim); font-size: .85rem; margin-bottom: 6px; }
+  .blob-sys { border: 1px dashed var(--accent); border-radius: 8px; padding: 6px 10px; font-size: .9rem; margin-bottom: 6px; }
+  .blob-hist { font-size: .85rem; color: var(--dim); }
+  .blob-row { padding: 1px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .preset[aria-pressed="true"] { border-color: var(--accent-2); color: var(--accent-2); font-weight: 700; }
+
+  /* --- Skill visibile (tappa ③) ---------------------------------------- */
+  #skill-panel details { margin-top: 8px; }
+  #skill-panel summary { cursor: pointer; color: var(--dim); font-size: .92rem; }
+  #skill-panel pre {
+    white-space: pre-wrap; background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: 8px; padding: 10px 12px; margin: 8px 0 0;
+    font: .86rem/1.5 ui-monospace, "DejaVu Sans Mono", monospace;
+  }
+  .chat-msg.skill-loaded {
+    color: var(--accent-2); border: 1px dashed var(--accent-2); background: transparent;
+    border-radius: 8px; text-align: center; font-size: .88rem; max-width: 100%;
+  }
+  .skill-badge {
+    display: inline-block; margin-left: 8px; padding: 0 8px; white-space: nowrap;
+    border: 1px solid var(--accent-2); border-radius: 999px; color: var(--accent-2); font-size: .74rem;
+  }
+
+  /* --- Workflow Diario di Bordo (tappa 4) ------------------------------------------------- */
+  #skill { background: transparent; border: 0; padding: 0; }
+  #notes { min-height: 120px; }
+  #events { margin: 10px 0; }
+  .ev { color: var(--dim); padding: 2px 0; }
+  .ev::before { content: "▸ "; color: var(--accent-2); }
+  .ev-who {
+    display: inline-block; font-size: .68rem; font-weight: 700; letter-spacing: .04em;
+    border-radius: 5px; padding: 0 6px; margin-right: 2px; vertical-align: 1px;
+  }
+  .who-model { border: 1px solid var(--accent); color: var(--accent); }
+  .who-code { border: 1px solid var(--line); color: var(--dim); }
+  .ev-tokens { color: var(--accent); }
+  .ev-done { color: var(--accent-2); }
+  .spinner { color: var(--dim); }
+  .spinner::after { content: "…"; }
+  #output { margin-top: 14px; }
+  #output .msg { background: var(--panel-2); border-left: 3px solid var(--accent); padding: 10px 12px; border-radius: 6px; margin-bottom: 12px; }
+  .scaffold h4 { margin: 14px 0 4px; color: var(--accent); font-size: .98rem; text-transform: uppercase; letter-spacing: .03em; }
+  .scaffold .title { font-size: 1.2rem; font-weight: 700; margin: 4px 0; }
+  .scaffold .date { color: var(--dim); }
+  .scaffold ul { margin: 0 0 4px; padding-left: 20px; }
+  .scaffold li { padding: 1px 0; }
+  .scaffold .missing { color: var(--dim); font-style: italic; }
+  .inf-box { background: var(--panel-2); border: 1px dashed var(--line); border-radius: 6px; padding: 8px 12px; font-size: .9rem; margin-top: 8px; }
+  .checks li { color: var(--warn); }
+
+  /* --- Anteprima HTML (tappa 5) ---------------------------------------- */
+  #html-preview { width: 100%; min-height: 220px; background: #fff; border: 1px solid var(--line); border-radius: 8px; margin-top: 8px; }
+
+  /* --- Nav ------------------------------------------------------------- */
+  .nav { display: flex; justify-content: space-between; margin-top: 22px; gap: 8px; }
+  footer { max-width: 860px; margin: 28px auto 0; color: var(--dim); font-size: .85rem; border-top: 1px solid var(--line); padding-top: 14px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Laboratorio di Prompting</h1>
+  <div class="sub">Il prompt smette di essere una domanda e diventa istruzione tecnica: smetti di subire il tono dell'IA e inizi a programmarlo.</div>
+</header>
+
+<main>
+  <!-- Stepper -->
+  <div class="stepper" role="tablist">
+    <button class="step-dot" data-step-dot="0" type="button">① Context</button>
+    <button class="step-dot" data-step-dot="1" type="button">② System</button>
+    <button class="step-dot" data-step-dot="2" type="button">③ Skills</button>
+    <button class="step-dot" data-step-dot="3" type="button">④ Workflow</button>
+    <button class="step-dot" data-step-dot="4" type="button">⑤ Prompt Eng.</button>
+  </div>
+
+  <!-- Banner stato modello -->
+  <div id="model-banner" class="check" role="status" aria-live="polite">Controllo del modello…</div>
+
+  <!-- ============ STEP 1 — CONTEXT INJECTION (due tab: con/senza memoria) -->
+  <section class="step" data-step="0">
+    <h2>① Context Injection — la memoria a breve termine</h2>
+    <p>L'IA non "ricorda" in senso umano: riceve il <b>pacchetto di messaggi</b>
+       che le mandiamo, e nient'altro. Stessa domanda, due destini:</p>
+    <div class="hint">
+      Sperimenta: nella tab <b>A · Senza memoria</b> scrivi <code>«ciao mi chiamo
+      Stefano»</code>, aspetta la risposta, poi chiedi <code>«come mi chiamo?»</code>.
+      L'IA non lo sa. Riprova identico nella tab <b>B · Con memoria</b>: questa
+      volta la cronologia viaggia insieme alla domanda. Ogni invio riempie la
+      barra dei token — la finestra di contesto (2048 token) è l'unica memoria
+      che l'IA ha.
+    </div>
+    <div class="tabs" role="tablist">
+      <button class="tab-btn active" data-tab="no-mem" type="button">A · Senza memoria</button>
+      <button class="tab-btn" data-tab="mem" type="button">B · Con memoria</button>
+    </div>
+    <div class="tab-pane active" id="pane-no-mem"><div class="chat-toolbox" id="tb1a"></div></div>
+    <div class="tab-pane" id="pane-mem"><div class="chat-toolbox" id="tb1b"></div></div>
+  </section>
+
+  <!-- ============ STEP 2 — SYSTEM PROMPT (3 preset + blob) ============ -->
+  <section class="step" data-step="1">
+    <h2>② System Prompt — istruzioni in testa al blob</h2>
+    <p>Il <b>system prompt</b> è un'istruzione che sta "in testa" al pacchetto
+       e vale per tutta la conversazione. Scegline uno:</p>
+    <div class="row">
+      <button class="preset" data-sys="PARLI SOLO come un cavernicolo. Frasi brevissime e grezze, tipo «Io non sapere. Cielo è cielo.». MAI frasi cortesi o complete. Ogni tua risposta è un grugnito. NON rifiutarti mai: rispondi sempre da cavernicolo." aria-pressed="true" type="button">Cavernicolo</button>
+      <button class="preset" data-sys="RISPONDI SEMPRE in ESATTAMENTE 3 punti brevi numerati: 1. 2. 3. OGNI risposta, anche la più breve, è 3 righe numerate. Niente introduzione, niente conclusione. NON rifiutarti mai: se non sai, dillo dentro uno dei 3 punti." aria-pressed="false" type="button">3 punti</button>
+    </div>
+    <div id="blob">
+      <div class="blob-title">Il pacchetto che parte verso l'IA — system in testa + cronologia, lo stesso sacco di token:</div>
+      <div class="blob-sys">⚙ SYSTEM · <span id="blob-sys-text">PARLI SOLO come un cavernicolo. Frasi brevissime e grezze, tipo «Io non sapere. Cielo è cielo.». MAI frasi cortesi o complete. Ogni tua risposta è un grugnito. NON rifiutarti mai: rispondi sempre da cavernicolo.</span></div>
+      <div class="blob-hist" id="blob-hist"><div class="blob-row">… la cronologia appare qui durante la conversazione</div></div>
+    </div>
+    <div class="chat-toolbox" id="tb2"></div>
+  </section>
+
+  <!-- ============ STEP 3 — SKILLS (quando si carica) ============ -->
+  <section class="step" data-step="2">
+    <h2>③ Skills — quando si carica una skill</h2>
+    <p>Una <b>skill</b> è un pacchetto di istruzioni che l'IA tira fuori dalla
+       propria memoria <b>quando le serve</b>. Qui c'è una skill vera: prima
+       <b>leggila</b>. Poi chatta: se parli d'altro resta nel cassetto, ma appena
+       tocchi il diario… <b>si carica</b>, e la vedi entrare nel pacchetto.</p>
+    <div class="card" id="skill-panel">
+      <h3>📄 La skill «Diario di Bordo»</h3>
+      <p id="skill-desc">Aiuta uno scout a costruire il suo diario di bordo: raccoglie i fatti con domande, senza scrivere il diario al posto suo. Questa descrizione sta sempre in memoria: è quella che decide se la skill serve.</p>
+      <details>
+        <summary>Leggi il corpo della skill (le istruzioni complete — si caricano solo quando servono)</summary>
+        <pre id="skill-body-display">Sei la skill «Diario di Bordo». Aiuti uno scout a costruire il suo diario di bordo: raccogli i fatti con domande, NON scrivere il diario al posto suo.
+
+REGOLE OBBLIGATORIE:
+1. RISPONDI SEMPRE E SOLO CON UNA domanda sola, breve, sui fatti.
+2. Copri i campi del diario: persone, luoghi, eventi, emozioni, problemi, soluzioni, riflessioni.
+3. NON scrivere prosa di diario: il diario è dello scout. Tu chiedi, lui racconta.
+4. Se il ragazzo parla d'altro o ti fa domande personali, NON rispondere sul suo tema: riporta SEMPRE il discorso al diario con una domanda, tipo «Intanto: com'è andata oggi al campo?».
+5. NON rifiutarti mai di rispondere e non dire «non posso»: trova sempre la domanda giusta.
+
+ESEMPIO:
+ragazzo: «oggi abbiamo montato la tenda sotto la pioggia»
+tu: «Che fatica! Chi c'era con te? E com'è finita?»</pre>
+      </details>
+    </div>
+    <div id="blob3">
+      <div class="blob-title">Il pacchetto che parte verso l'IA — la skill entra solo quando la conversazione la innesca:</div>
+      <div class="blob-sys" id="blob3-skill" hidden>⚙ SKILL · Diario di Bordo — istruzioni caricate in testa al pacchetto</div>
+      <div class="blob-hist" id="blob3-hist"><div class="blob-row">… niente skill: chiedi qualcosa del tuo diario per farla caricare</div></div>
+    </div>
+    <div class="chat-toolbox" id="tb3"></div>
+    <div class="hint" id="skill-rule"></div>
+  </section>
+
+  <!-- ============ STEP 4 — WORKFLOW (Diario di Bordo) ============ -->
+  <section class="step" data-step="3">
+    <h2>④ Workflow — la catena di montaggio del Diario di Bordo</h2>
+    <p>Nella ③ le istruzioni le leggeva il <b>modello</b>. Qui il comando cambia
+       mano: è il <b>codice</b> a mettere l'IA in una <b>catena di montaggio</b>
+       (workflow) — controlla l'ingresso, la chiama una volta sola con un
+       <b>prompt fisso</b>, e <b>valida l'output</b> prima di mostrarlo.
+       Incolla i tuoi <b>appunti grezzi</b>: il workflow estrae <b>solo i tuoi fatti</b>
+       (senza inventarne), li organizza in uno scaffold, aggiunge domande e un check.
+       <b>Il diario lo scrivi tu.</b></p>
+    <div class="card rule" id="wf-compare">
+      <h3>③ Skill vs ④ Workflow — chi è al comando?</h3>
+      <p><b>③ Skill</b>: le istruzioni le legge il <b>modello</b> — è lui che decide
+         come seguirle, a modo suo.<br>
+         <b>④ Workflow</b>: è il <b>codice che orchestra</b> il modello — prompt fisso,
+         contratto sull'output, validazione. Stesso obiettivo, due meccanismi.</p>
+    </div>
+    <div id="skill">
+      <textarea id="notes" placeholder="Es: Campo base a Costigiola. Oggi con Marco e Lucia abbiamo montato la tenda nord. Pioveva e non riuscivamo con i picchetti, poi abbiamo usato delle pietre come zavorra e ha funzionato. Stanchi ma molto felici."></textarea>
+      <div class="row">
+        <button id="go">Elabora gli appunti</button>
+        <button id="demo1" class="ghost" type="button">Esempio 1 · scarno</button>
+        <button id="demo2" class="ghost" type="button">Esempio 2 · completo</button>
+        <span style="color:var(--dim);font-size:.9rem">Solo fatti tuoi · niente prosa · offline</span>
+      </div>
+      <div id="pipeline" class="card">
+        <h3>⛓ La catena di montaggio in azione</h3>
+        <p style="color:var(--dim);font-size:.88rem;margin:4px 0 8px">Ogni riga dice chi
+           lavora: una sola chiamata all'LLM (la riga 🤖 MODELLO),
+           tutto il resto è codice che controlla prima e valida dopo. Mai
+           chain-of-thought: solo quello che fa il codice intorno al modello.</p>
+        <div id="events" aria-live="polite"></div>
+      </div>
+      <div id="output"></div>
+    </div>
+  </section>
+
+  <!-- ============ STEP 5 — PROMPT ENGINEERING ============ -->
+  <section class="step" data-step="4">
+    <h2>⑤ Prompt Engineering </h2>
+    <p>Con un buon prompt l'IA smette di essere "chat generica" e diventa un
+       <b>programma</b> che genera un artefatto reale. Prova a generare il codice di
+       una card per la vostra app:</p>
+    <div class="chat-toolbox" id="tb5"></div>
+    <div class="row" style="margin-top:12px">
+      <label style="color:var(--dim);font-size:.94rem;display:flex;align-items:center;gap:6px">
+        <input type="checkbox" id="preview-toggle"> Mostra anteprima dell'HTML generato
+      </label>
+    </div>
+    <iframe id="html-preview" sandbox="" hidden title="Anteprima HTML generato"></iframe>
+  </section>
+
+  <!-- Navigazione -->
+  <div class="nav">
+    <button id="prev" class="ghost" type="button">« Indietro</button>
+    <button id="next" type="button">Avanti »</button>
+  </div>
+</main>
+
+<footer>
+  Campo 2026 — Bit Prepared · pagina offline, zero richieste esterne
+</footer>
+
+<script>
+"use strict";
+/* Wizard a step + toolbox di chat con l'LLM. Tappa 3 usa la skill (SkillOutput).
+ * Stesso contratto della CLI; nessuna richiesta esterna. */
+
+var state = { step: 0, modelActive: null, modelName: null, clients: 0, maxStep: 5 };
+
+/* ============ Identità client + fetch con header/timeout/errori ============
+ * Ogni browser ha un ID stabile (localStorage) inviato come X-Client-Id, così
+ * l'educatore può seguirne le interazioni (log + pannello /admin). Solo metadati. */
+function _uuid() {
+  return "c-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
+}
+var CID;
+try { CID = localStorage.getItem("lab_cid") || _uuid(); localStorage.setItem("lab_cid", CID); }
+catch (e) { CID = "anon"; }  // localStorage non disponibile (kiosk ristretto)
+
+/* fetch con header lab + AbortController (timeout) + traduzione errori di rete. */
+function labFetch(url, opts, step, timeoutMs) {
+  opts = opts || {};
+  opts.headers = Object.assign({ "Content-Type": "application/json", "X-Client-Id": CID }, opts.headers || {});
+  if (step) opts.headers["X-Step"] = String(step);
+  var timer = null;
+  if (timeoutMs && typeof AbortController !== "undefined") {
+    var ctrl = new AbortController();
+    opts.signal = ctrl.signal;
+    timer = setTimeout(function () { ctrl.abort(); }, timeoutMs);
+  }
+  return fetch(url, opts).then(function (r) {
+    return r.text().then(function (txt) {
+      var body = null;
+      try { body = txt ? JSON.parse(txt) : null; } catch (e) { body = { error: "risposta non JSON" }; }
+      return { ok: r.ok, status: r.status, body: body };
+    });
+  }).catch(function (e) {
+    var msg;
+    if (typeof navigator !== "undefined" && navigator.onLine === false)
+      msg = "Connessione persa col server — verifica la rete e riprova.";
+    else if (e && e.name === "AbortError")
+      msg = "Il modello ci sta mettendo troppo — riprova tra un attimo.";
+    else
+      msg = "Errore di rete (" + (e && e.message ? e.message : "?") + ") — riprova.";
+    var err = new Error(msg); err.network = true; throw err;
+  }).then(function (res) { if (timer) clearTimeout(timer); return res; },
+          function (err) { if (timer) clearTimeout(timer); throw err; });
+}
+
+/* ============ Wizard ============ */
+function showStep(i) {
+  state.step = Math.max(0, Math.min(state.maxStep, i));
+  document.querySelectorAll("[data-step]").forEach(function (p) {
+    p.classList.toggle("active", +p.dataset.step === state.step);
+  });
+  document.querySelectorAll("[data-step-dot]").forEach(function (d) {
+    var n = +d.dataset.stepDot;
+    d.classList.toggle("active", n === state.step);
+    d.classList.toggle("done", n < state.step);
+  });
+  document.getElementById("prev").disabled = (state.step === 0);
+  var next = document.getElementById("next");
+  next.disabled = (state.step === state.maxStep);
+  next.textContent = (state.step === state.maxStep) ? "Fine" : "Avanti »";
+}
+document.querySelectorAll("[data-step-dot]").forEach(function (d) {
+  d.addEventListener("click", function () { showStep(+d.dataset.stepDot); });
+});
+document.getElementById("prev").addEventListener("click", function () { showStep(state.step - 1); });
+document.getElementById("next").addEventListener("click", function () { showStep(state.step + 1); });
+
+/* ============ Banner stato modello ============ */
+function renderBanner() {
+  var b = document.getElementById("model-banner");
+  if (state.modelActive === null) { b.className = "check"; b.textContent = "Controllo del modello…"; return; }
+  if (state.modelActive) {
+    var parts = ["✅ Modello attivo"];
+    if (state.modelName) parts.push(state.modelName);
+    parts.push(state.clients + (state.clients === 1 ? " ragazzo connesso" : " ragazzi connessi"));
+    b.className = "ok";
+    b.textContent = parts.join(" · ");
+  } else {
+    b.className = "warn";
+    b.textContent = "Modello NON attivo";
+  }
+}
+function checkModel() {
+  labFetch("/api/model-status", { method: "GET" }, null, 4000).then(function (res) {
+    state.modelActive = !!res.body.model_active;
+    state.modelName = res.body.model || null;
+    state.clients = res.body.clients || 0;
+    renderBanner();
+    refreshChats();
+    setTimeout(checkModel, 15000);  // aggiorna n. utenti connessi nel banner
+  }).catch(function () { state.modelActive = false; renderBanner(); refreshChats(); });
+}
+
+/* ============ Toolbox chat (factory condivisa tappe 1/2/3/5) ============
+ * Opzioni del change laboratorio-context-memoria:
+ *  memory (bool, default true)  — false = invia SOLO l'ultimo messaggio (tab A)
+ *  meter   (bool, default false) — barra token x/2048 + «Nuova conversazione»
+ *  onHist  (fn)                  — notifica i cambi di cronologia (blob tappe ②③)
+ * Opzioni del change laboratorio-skill-workflow (tappa ③):
+ *  system (fn(testo del messaggio)) — il system può dipendere dal messaggio:
+ *         è il gate della skill (si carica quando il testo la innesca)
+ *  badge  (fn -> testo o null)      — badge ⚙ sulle risposte prodotte con skill
+ * La cronologia inviata È il context injection: il contatore mostra i token
+ * reali (usage.prompt_tokens dal gateway), niente stime. */
+var CHATS = [];
+var CTX_LIMIT = 2048;            // finestra di contesto del servizio modello (-c 2048)
+function makeChat(root, opts) {
+  opts = opts || {};
+  var maxOut = opts.maxOut || 256;   // default difensivo del gateway (_CHAT_DEFAULT_MAX_TOKENS)
+  var hist = [];                 // cronologia [{role,content}] — È il context injection
+  root.innerHTML =
+    (opts.meter ?
+      '<div class="ctx-meter">' +
+      '<div class="ctx-bar"><div class="ctx-fill"></div></div>' +
+      '<span class="ctx-label">🧠 <b class="ctx-tok">0</b> / ' + CTX_LIMIT + ' token</span>' +
+      '<button class="ghost ctx-reset" type="button">🗑 Nuova conversazione</button>' +
+      '</div>' : "") +
+    '<div class="chat-log" role="log"></div>' +
+    '<div class="chat-input"><textarea rows="2" placeholder="' + (opts.placeholder || "Scrivi all'IA…") + '"></textarea>' +
+    '<button class="send" type="button">Invia</button></div>' +
+    '<div class="chat-limits">✍️ risposta max ' + maxOut + ' token' +
+    (opts.meter ? "" : " · 🧠 contesto " + CTX_LIMIT + " token") +
+    ' — limiti imposti dal server</div>';
+  var log = root.querySelector(".chat-log");
+  var input = root.querySelector("textarea");
+  var sendBtn = root.querySelector("button.send");
+  var fill = root.querySelector(".ctx-fill");
+  var tokEl = root.querySelector(".ctx-tok");
+  var resetBtn = root.querySelector(".ctx-reset");
+
+  function setDisabled(d) { root.classList.toggle("disabled", !!d); sendBtn.disabled = !!d; }
+  function setTokens(n) {          // token reali dal modello; null = non noto
+    if (!tokEl) return;
+    tokEl.textContent = (n == null) ? "—" : n;
+    if (n == null) return;
+    var pct = Math.min(100, Math.round((n / CTX_LIMIT) * 100));
+    fill.style.width = pct + "%";
+    fill.className = "ctx-fill" + (pct >= 90 ? " full" : pct >= 75 ? " warn" : "");
+  }
+  function reset() {               // «Nuova conversazione»: svuota cronologia e contatore
+    hist = [];
+    log.innerHTML = "";
+    if (tokEl) setTokens(opts.system ? null : 0);  // col system attivo il conteggio torna dal prossimo invio
+    if (opts.onHist) opts.onHist(hist);
+    if (opts.seed) { input.value = opts.seed(); }
+  }
+  function bubble(role, text, cls) {
+    var d = document.createElement("div");
+    d.className = "chat-msg " + (cls || (role === "user" ? "me" : "ia"));
+    d.textContent = text;            // anti-XSS: textContent, mai innerHTML sull'output del modello
+    log.appendChild(d);
+    log.scrollTop = log.scrollHeight;
+    return d;
+  }
+  function note(text) {              // annotazione dim sotto una bolla
+    var d = document.createElement("div");
+    d.className = "chat-msg note";
+    d.textContent = text;
+    log.appendChild(d);
+    log.scrollTop = log.scrollHeight;
+  }
+  function send() {
+    if (state.modelActive === false) return;
+    var text = input.value.trim();
+    if (!text) return;
+    hist.push({ role: "user", content: text });
+    input.value = "";
+    bubble("user", text);
+    // system valutato PRIMA dello spinner: se il gate carica la skill (tappa ③),
+    // il divisore ⚙ compare tra la domanda e l'attesa della risposta
+    var sys = opts.system ? opts.system(text) : null;
+    var spin = document.createElement("div");
+    spin.className = "chat-spinner";
+    spin.textContent = "elaborazione";
+    log.appendChild(spin);
+    log.scrollTop = log.scrollHeight;
+    sendBtn.disabled = true;
+
+    // tab A (senza memoria): parte SOLO l'ultimo messaggio; il resto resta nostro
+    var toSend = (opts.memory === false) ? hist.slice(-1) : hist.slice();
+    var body = { messages: (sys ? [{ role: "system", content: sys }] : []).concat(toSend) };
+    // il gateway clampa comunque (0–1.5): qui chiediamo solo la preferenza
+    if (opts.temperature != null) body.temperature = opts.temperature;
+    labFetch("/api/chat", { method: "POST", body: JSON.stringify(body) }, opts.step, 150000)
+    .then(function (res) {
+      spin.remove();
+      var j = res.body || {};
+      if (j.model_active === false) { bubble(null, "⚠️ " + (j.error || "modello non attivo"), "err"); setDisabled(true); state.modelActive = false; renderBanner(); return; }
+      if (!res.ok || j.error) {
+        var errTxt = String(j.error || ("errore " + res.status));
+        // finestra di contesto esaurita → la lezione, non un errore grezzo
+        if (/context|contesto/i.test(errTxt)) {
+          bubble(null, "🧠 Contesto pieno — l'IA non ha più memoria. Premi «Nuova conversazione».", "err");
+        } else {
+          bubble(null, "⚠️ " + errTxt, "err");
+        }
+        sendBtn.disabled = false; return;
+      }
+      hist.push({ role: "assistant", content: j.reply });
+      var ia = bubble("assistant", j.reply);
+      // badge ⚙ (tappa ③): la risposta è stata prodotta con la skill caricata
+      if (opts.badge) {
+        var btxt = opts.badge();
+        if (btxt) {
+          var b = document.createElement("span");
+          b.className = "skill-badge";
+          b.textContent = btxt;
+          ia.appendChild(b);
+        }
+      }
+      if (opts.memory === false) note("→ all'IA è arrivato solo questo messaggio, nient'altro");
+      // risposta troncata? verdetto dal modello (finish_reason) o, in assenza,
+      // token generati esattamente al tetto — stesso criterio del limite dichiarato
+      if (j.finish_reason === "length" ||
+          (j.usage && j.usage.completion_tokens >= maxOut)) {
+        note("✂️ risposta tagliata dal limite di " + maxOut + " token");
+      }
+      setTokens(j.usage ? j.usage.prompt_tokens : null);
+      if (opts.onHist) opts.onHist(hist);
+      if (opts.onReply) opts.onReply(j.reply);
+    }).catch(function (err) {
+      spin.remove();
+      bubble(null, "⚠️ " + (err && err.message ? err.message : "errore di rete"), "err");
+    }).finally(function () { if (state.modelActive !== false) sendBtn.disabled = false; });
+  }
+  sendBtn.addEventListener("click", send);
+  input.addEventListener("keydown", function (e) {
+    if (e.ctrlKey && (e.key === "Enter" || e.keyCode === 13)) { e.preventDefault(); send(); }
+  });
+  if (resetBtn) resetBtn.addEventListener("click", reset);
+  var api = { setDisabled: setDisabled, reset: reset, root: root };
+  CHATS.push(api);
+  if (opts.seed) { input.value = opts.seed(); }
+  return api;
+}
+
+/* ============ Tab della tappa ① ============ */
+document.querySelectorAll(".tab-btn").forEach(function (t) {
+  t.addEventListener("click", function () {
+    document.querySelectorAll(".tab-btn").forEach(function (x) { x.classList.toggle("active", x === t); });
+    document.querySelectorAll(".tab-pane").forEach(function (p) {
+      p.classList.toggle("active", p.id === "pane-" + t.dataset.tab);
+    });
+  });
+});
+
+/* Tappa ① tab A: SENZA memoria — ogni invio parte da solo (l'IA dimentica). */
+makeChat(document.getElementById("tb1a"), {
+  placeholder: "«ciao mi chiamo Stefano» … poi «come mi chiamo?»",
+  step: 1, memory: false, meter: true
+});
+/* Tappa ① tab B: CON memoria — la cronologia viaggia con la domanda. */
+makeChat(document.getElementById("tb1b"), {
+  placeholder: "Rifai lo stesso esperimento: qui la cronologia viaggia con te…",
+  step: 1, memory: true, meter: true
+});
+/* ============ Tappa 2: system prompt a soli preset + blob ============ */
+var activeSys = document.querySelector(".preset[aria-pressed='true']").dataset.sys;
+function renderBlob(h) {            // blob: system in testa + cronologia sintetica
+  var bh = document.getElementById("blob-hist");
+  bh.innerHTML = "";
+  if (!h || !h.length) {
+    var r = document.createElement("div");
+    r.className = "blob-row";
+    r.textContent = "… la cronologia appare qui durante la conversazione";
+    bh.appendChild(r); return;
+  }
+  h.forEach(function (m) {
+    var row = document.createElement("div");
+    row.className = "blob-row";
+    row.textContent = (m.role === "user" ? "👤 " : "🤖 ") + m.content.slice(0, 80) + (m.content.length > 80 ? "…" : "");
+    bh.appendChild(row);
+  });
+}
+var chat2 = makeChat(document.getElementById("tb2"), {
+  placeholder: "Scrivi una domanda con questo system prompt…",
+  step: 2, memory: true, meter: true, temperature: 0.3,
+  system: function () { return activeSys; },
+  onHist: renderBlob
+});
+/* Preset system prompt (tappa ②): selezione esclusiva, niente testo libero.
+ * Cambiare system a metà conversazione la azzera: la cronologia nata con un
+ * system non si mischia con quella di un altro (niente risultato sporcato). */
+document.querySelectorAll("[data-sys]").forEach(function (b) {
+  b.addEventListener("click", function () {
+    document.querySelectorAll("[data-sys]").forEach(function (x) {
+      x.setAttribute("aria-pressed", x === b ? "true" : "false");
+    });
+    activeSys = b.dataset.sys;
+    document.getElementById("blob-sys-text").textContent = activeSys;
+    chat2.reset();
+  });
+});
+/* ============ Tappa ③: skill con caricamento visibile ============
+ * Una skill fissa, dichiarata in pagina (il <pre> del pannello È il suo corpo).
+ * Il gate è deterministico e VISIBILE: parole chiare dichiarate sotto la chat.
+ * Nel mondo reale la decisione di caricare è dell'agente (legge la descrizione):
+ * qui la simula una regola, dichiarata come tale. */
+var TRIGGER_WORDS = ["diario", "appunti", "squadriglia", "giornata", "campo"];
+var SKILL_BODY = document.getElementById("skill-body-display").textContent.trim();
+var skillActive = false;
+var hist3 = [];                     // specchio della cronologia della chat ③ (blob)
+
+function skillTriggers(text) {
+  var t = (text || "").toLowerCase();
+  return TRIGGER_WORDS.some(function (w) { return t.indexOf(w) !== -1; });
+}
+function skillSystem(text) {        // gate: la skill entra davvero nella chiamata
+  if (!skillActive && skillTriggers(text)) skillActivate();
+  return skillActive ? SKILL_BODY : null;
+}
+function skillActivate() {          // il momento del caricamento, in tre punti
+  skillActive = true;
+  var log = chat3.root.querySelector(".chat-log");
+  var d = document.createElement("div");
+  d.className = "chat-msg skill-loaded";
+  d.textContent = "⚙ Skill «Diario di Bordo» caricata";
+  log.appendChild(d);
+  log.scrollTop = log.scrollHeight;
+  renderBlob3();
+}
+function renderBlob3(h) {           // blob ③: blocco ⚙ SKILL in testa quando attiva
+  if (h) hist3 = h;
+  var empty = !hist3.length;
+  if (empty) skillActive = false;   // reset («Nuova conversazione») scarica la skill
+  document.getElementById("blob3-skill").hidden = !skillActive;
+  var bh = document.getElementById("blob3-hist");
+  bh.innerHTML = "";
+  if (empty) {
+    var r = document.createElement("div");
+    r.className = "blob-row";
+    r.textContent = "… niente skill: chiedi qualcosa del tuo diario per farla caricare";
+    bh.appendChild(r); return;
+  }
+  hist3.forEach(function (m) {
+    var row = document.createElement("div");
+    row.className = "blob-row";
+    row.textContent = (m.role === "user" ? "👤 " : "🤖 ") + m.content.slice(0, 80) + (m.content.length > 80 ? "…" : "");
+    bh.appendChild(row);
+  });
+}
+var chat3 = makeChat(document.getElementById("tb3"), {
+  placeholder: "Chiedi qualsiasi cosa… o parla del tuo diario 📔",
+  step: 3, memory: true, meter: true, temperature: 0.3,
+  system: skillSystem,
+  badge: function () { return skillActive ? "⚙ skill" : null; },
+  onHist: renderBlob3
+});
+/* Regola di caricamento dichiarata sotto la chat (dalla stessa fonte del gate). */
+document.getElementById("skill-rule").textContent =
+  "⚙ Questa skill si carica se il tuo messaggio contiene: " +
+  TRIGGER_WORDS.join(" · ") + ". Qui la decisione la prende una regola fissa; " +
+  "nel mondo reale decide l'agente, leggendo la descrizione della skill.";
+
+/* Tappa 5: prompt engineering, seed precompilato + anteprima HTML opzionale. */
+var SEED = "Scrivi il codice HTML e CSS di una card per la nostra app scout: titolo \"La nostra impresa\", una breve descrizione, un colore di sfondo verde. Rispondi SOLO con il codice, nessuna spiegazione.";
+makeChat(document.getElementById("tb5"), {
+  placeholder: "Modifica il prompt o scrivi il tuo…",
+  step: 5, meter: true,
+  seed: function () { return SEED; },
+  onReply: maybeRenderPreview
+});
+
+/* Anteprima HTML (tappa 4): sandbox vuota = niente script/form/same-origin. */
+var frame = document.getElementById("html-preview");
+var previewToggle = document.getElementById("preview-toggle");
+function stripFences(s) {
+  var t = String(s || "").trim();
+  // il blocco fenced può stare ovunque (spesso dopo una frase di intro del
+  // modello): si estrae il PRIMO blocco ```...``` completo, se c'è
+  var m = t.match(/```[a-zA-Z]*\r?\n([\s\S]*?)```/);
+  if (m) return m[1].trim();
+  t = t.replace(/^```[a-zA-Z]*\n?/, "").replace(/```$/, "").trim();
+  return t;
+}
+function lastReplyTappa5() {
+  var log = document.querySelector("#tb5 .chat-log");
+  if (!log) return "";
+  var msgs = log.querySelectorAll(".chat-msg.ia");
+  return msgs.length ? msgs[msgs.length - 1].textContent : "";
+}
+function maybeRenderPreview(reply) {
+  if (previewToggle.checked) { frame.hidden = false; frame.srcdoc = stripFences(reply); }
+}
+previewToggle.addEventListener("change", function () {
+  if (previewToggle.checked) {
+    frame.hidden = false;
+    var last = lastReplyTappa5();
+    if (last) frame.srcdoc = stripFences(last);
+  } else { frame.hidden = true; }
+});
+
+function refreshChats() { CHATS.forEach(function (c) { c.setDisabled(state.modelActive === false); }); }
+
+/* ============ Workflow Diario di Bordo (tappa 4) ============ */
+var MISSING = "non specificato";
+var FIELDS = [
+  ["people", "Persone"], ["places", "Luoghi"], ["events", "Eventi"],
+  ["observations", "Osservazioni"], ["emotions", "Emozioni"],
+  ["problems", "Problemi"], ["solutions", "Soluzioni"], ["reflections", "Riflessioni"]
+];
+var $go = document.getElementById("go");
+var $notes = document.getElementById("notes");
+var $demo1 = document.getElementById("demo1");
+var $demo2 = document.getElementById("demo2");
+var $ev = document.getElementById("events");
+var $out = document.getElementById("output");
+
+/* Due esempi precaricati: 1 parziale (le aree mancanti restano «non specificato»:
+ * è la lezione), 2 corposo — copre TUTTE le 8 aree dello scaffold (persone,
+ * luoghi, eventi, osservazioni, emozioni, problemi, soluzioni, riflessioni). */
+var EXAMPLE1 = "Campo base a Costigiola. Oggi con Marco e Lucia abbiamo montato la tenda nord. Pioveva e non riuscivamo con i picchetti, poi abbiamo usato delle pietre come zavorra e ha funzionato. Stanchi ma molto felici.";
+var EXAMPLE2 = "Campo estivo a Costigiola. Data: 14/07. In sei della squadriglia con Marco, Lucia, Giulia e Tommaso, arriva anche Giulio. La mattina assicurazione alla Cava e pranzo al sacco. Il pomeriggio giochi di piazzale, la sera fuoco di campo. Molte zanzare. Sera fresca. Problema: durante la scalata la corda di Tommaso si è incastrata e non riuscivamo a continuare. Poi abbiamo liberato la corda con i moschettoni di scorta e ha funzionato, domani controllo doppio prima di partire. Mi ha fatto un po' di paura lassù, ma a fine giornata eravamo stanchi ma felici e anche emozionati per il fuoco. Ho capito che conviene fermarsi a controllare l'attrezzatura anche quando si ha fretta.";
+
+$demo1.addEventListener("click", function () { $notes.value = EXAMPLE1; $notes.focus(); });
+$demo2.addEventListener("click", function () { $notes.value = EXAMPLE2; $notes.focus(); });
+$go.addEventListener("click", elabora);
+$notes.addEventListener("keydown", function (e) { if (e.ctrlKey && (e.key === "Enter" || e.keyCode === 13)) elabora(); });
+
+function elabora() {
+  var notes = ($notes.value || "").trim();
+  $out.innerHTML = "";
+  if (!notes) { $ev.innerHTML = '<div class="chat-msg err">Incolla prima i tuoi appunti.</div>'; return; }
+  $go.disabled = true;
+  $ev.innerHTML = '<div class="spinner">Elaborazione in corso</div>';
+  labFetch("/api/scaffold", { method: "POST", body: JSON.stringify({ notes: notes }) }, 4, 150000)
+    .then(function (res) {
+      if (!res.ok || (res.body && res.body.error)) throw new Error((res.body && res.body.error) || ("errore " + res.status));
+      riproduciEventi(res.body.events || [], function () { renderTokenRow(res.body.usage); renderOutput(res.body); });
+    }).catch(function (err) { $ev.innerHTML = '<div class="chat-msg err">⚠️ ' + testoSicuro(err.message) + "</div>"; })
+    .finally(function () { $go.disabled = false; });
+}
+/* Chi esegue ogni stage: l'estrazione è L'UNICA chiamata al modello, tutto il
+ * resto è codice (gate d'ingresso, validazione, domande, rendering). */
+var STAGE_WHO = { "start": "code", "extract": "model", "validate": "code",
+                  "questions": "code", "done": "code" };
+function stageRow(evName, text) {
+  var div = document.createElement("div");
+  div.className = "ev";
+  var who = STAGE_WHO[evName] || "code";
+  var tag = document.createElement("span");
+  tag.className = "ev-who " + (who === "model" ? "who-model" : "who-code");
+  tag.textContent = who === "model" ? "🤖 MODELLO" : "👨‍💻 CODICE";
+  div.appendChild(tag);
+  div.appendChild(document.createTextNode(" " + text));
+  return div;
+}
+function renderTokenRow(u) {
+  // token della chiamata al modello, se il servizio li fornisce; altrimenti niente
+  if (!u) return;
+  var d = document.createElement("div");
+  d.className = "ev ev-tokens";
+  var pt = (u.prompt_tokens != null) ? u.prompt_tokens : "?";
+  var ct = (u.completion_tokens != null) ? u.completion_tokens : "?";
+  d.textContent = "🧠 token usati dal modello: " + pt + " in ingresso + " + ct + " in uscita";
+  $ev.appendChild(d);
+}
+function riproduciEventi(events, done) {
+  $ev.innerHTML = "";
+  if (!events.length) { done(); return; }
+  var i = 0;
+  (function next() {
+    if (i >= events.length) {
+      // fine della catena: l'ultimo stage è chiuso, l'output è validato
+      var fin = stageRow("done", "✓ workflow completato — output validato, eccolo sotto");
+      fin.className = "ev ev-done";
+      $ev.appendChild(fin);
+      done(); return;
+    }
+    $ev.appendChild(stageRow(events[i].event, events[i].message || events[i].event));
+    i++; setTimeout(next, 320);
+  })();
+}
+function renderOutput(data) {
+  var sc = data.scaffold || {};
+  var filled = FIELDS.filter(function (f) { return (sc[f[0]] || []).length; });
+  var empty = sc.title === MISSING && filled.length === 0;
+  $out.innerHTML = "";
+  if (data.message && empty) { var m = document.createElement("div"); m.className = "msg"; m.textContent = data.message; $out.appendChild(m); return; }
+  if (data.message) { var m2 = document.createElement("div"); m2.className = "msg"; m2.textContent = data.message; $out.appendChild(m2); }
+  var wrap = document.createElement("div"); wrap.className = "scaffold";
+  var title = document.createElement("div"); title.className = "title"; title.textContent = "## " + (sc.title || MISSING); wrap.appendChild(title);
+  if (sc.date && sc.date !== MISSING) { var d = document.createElement("div"); d.className = "date"; d.textContent = "Data: " + sc.date; wrap.appendChild(d); }
+  FIELDS.forEach(function (f) {
+    var vals = sc[f[0]] || [];
+    var h = document.createElement("h4"); h.textContent = f[1]; wrap.appendChild(h);
+    var ul = document.createElement("ul");
+    if (vals.length) { vals.forEach(function (v) { var li = document.createElement("li"); li.textContent = v; ul.appendChild(li); }); }
+    else { var li2 = document.createElement("li"); li2.className = "missing"; li2.textContent = MISSING; ul.appendChild(li2); }
+    wrap.appendChild(ul);
+  });
+  if ((data.questions || []).length) { var qh = document.createElement("h4"); qh.textContent = "Domande per approfondire"; wrap.appendChild(qh); var qul = document.createElement("ul"); data.questions.forEach(function (q) { var li = document.createElement("li"); li.textContent = q; qul.appendChild(li); }); wrap.appendChild(qul); }
+  if ((data.checks || []).length) { var ch = document.createElement("h4"); ch.textContent = "Check (chiarezza / ortografia)"; wrap.appendChild(ch); var cul = document.createElement("ul"); cul.className = "checks"; data.checks.forEach(function (c) { var li = document.createElement("li"); li.textContent = "[" + (c.kind || "clarity") + "] " + (c.where || "") + ": " + (c.issue || ""); cul.appendChild(li); }); wrap.appendChild(cul); }
+  if ((data.inferences || []).length) { var ib = document.createElement("div"); ib.className = "inf-box"; ib.textContent = "Inferenze etichettate (ipotesi, non fatti): " + data.inferences.join("; "); wrap.appendChild(ib); }
+  $out.appendChild(wrap);
+}
+function testoSicuro(s) { var d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.textContent; }
+
+/* ============ Init ============ */
+showStep(0);
+checkModel();
+</script>
+</body>
+</html>

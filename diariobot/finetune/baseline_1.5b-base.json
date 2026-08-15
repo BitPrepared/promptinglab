@@ -1,0 +1,301 @@
+{
+  "label": "1.5b-base-q4",
+  "n": 18,
+  "metrics": {
+    "raw_json_valid": 83.3,
+    "fallback": 16.7,
+    "no_invention": 44.4,
+    "no_prose": 88.9,
+    "questions_ok": 72.2,
+    "title_ok": 83.3
+  },
+  "fact_recall_avg": 0.383,
+  "per_example": [
+    {
+      "id": "g01",
+      "raw_json_valid": true,
+      "fallback": false,
+      "no_invention": true,
+      "no_prose": false,
+      "questions_ok": true,
+      "fact_recall": 0.6,
+      "title_ok": true,
+      "n_invented": 0,
+      "invented": []
+    },
+    {
+      "id": "g02",
+      "raw_json_valid": true,
+      "fallback": false,
+      "no_invention": false,
+      "no_prose": true,
+      "questions_ok": true,
+      "fact_recall": 0.3333333333333333,
+      "title_ok": true,
+      "n_invented": 7,
+      "invented": [
+        [
+          "people",
+          "non specificato"
+        ],
+        [
+          "places",
+          "non specificato"
+        ],
+        [
+          "observations",
+          "non specificato"
+        ]
+      ]
+    },
+    {
+      "id": "g03",
+      "raw_json_valid": true,
+      "fallback": false,
+      "no_invention": false,
+      "no_prose": true,
+      "questions_ok": true,
+      "fact_recall": 0.6666666666666666,
+      "title_ok": true,
+      "n_invented": 1,
+      "invented": [
+        [
+          "reflections",
+          "Mi piace vedere come un gruppo di persone possa lavorare insieme per realizzare un progetto comune."
+        ]
+      ]
+    },
+    {
+      "id": "g04",
+      "raw_json_valid": true,
+      "fallback": false,
+      "no_invention": false,
+      "no_prose": true,
+      "questions_ok": true,
+      "fact_recall": 0.42857142857142855,
+      "title_ok": true,
+      "n_invented": 2,
+      "invented": [
+        [
+          "events",
+          "ridere e scherzare"
+        ],
+        [
+          "reflections",
+          "Ho trovato il tempo per divertirmi e riposare."
+        ]
+      ]
+    },
+    {
+      "id": "g05",
+      "raw_json_valid": false,
+      "fallback": true,
+      "no_invention": true,
+      "no_prose": true,
+      "questions_ok": false,
+      "fact_recall": 0.0,
+      "title_ok": false,
+      "n_invented": 0,
+      "invented": []
+    },
+    {
+      "id": "g06",
+      "raw_json_valid": true,
+      "fallback": false,
+      "no_invention": false,
+      "no_prose": true,
+      "questions_ok": true,
+      "fact_recall": 0.2,
+      "title_ok": true,
+      "n_invented": 1,
+      "invented": [
+        [
+          "emotions",
+          "tranquillizzazione"
+        ]
+      ]
+    },
+    {
+      "id": "g07",
+      "raw_json_valid": true,
+      "fallback": false,
+      "no_invention": false,
+      "no_prose": false,
+      "questions_ok": true,
+      "fact_recall": 0.6,
+      "title_ok": true,
+      "n_invented": 1,
+      "invented": [
+        [
+          "places",
+          "casa"
+        ]
+      ]
+    },
+    {
+      "id": "g08",
+      "raw_json_valid": true,
+      "fallback": false,
+      "no_invention": true,
+      "no_prose": true,
+      "questions_ok": true,
+      "fact_recall": 0.5,
+      "title_ok": true,
+      "n_invented": 0,
+      "invented": []
+    },
+    {
+      "id": "g09",
+      "raw_json_valid": true,
+      "fallback": false,
+      "no_invention": false,
+      "no_prose": true,
+      "questions_ok": true,
+      "fact_recall": 0.375,
+      "title_ok": true,
+      "n_invented": 1,
+      "invented": [
+        [
+          "reflections",
+          "Pensiero su come si può migliorare l'esperienza di cucina in futuro"
+        ]
+      ]
+    },
+    {
+      "id": "g10",
+      "raw_json_valid": false,
+      "fallback": true,
+      "no_invention": true,
+      "no_prose": true,
+      "questions_ok": false,
+      "fact_recall": 0.0,
+      "title_ok": false,
+      "n_invented": 0,
+      "invented": []
+    },
+    {
+      "id": "g11",
+      "raw_json_valid": true,
+      "fallback": false,
+      "no_invention": false,
+      "no_prose": true,
+      "questions_ok": true,
+      "fact_recall": 0.375,
+      "title_ok": true,
+      "n_invented": 1,
+      "invented": [
+        [
+          "reflections",
+          "Mi sentivo felice per la vittoria"
+        ]
+      ]
+    },
+    {
+      "id": "g12",
+      "raw_json_valid": true,
+      "fallback": false,
+      "no_invention": true,
+      "no_prose": true,
+      "questions_ok": true,
+      "fact_recall": 0.5714285714285714,
+      "title_ok": true,
+      "n_invented": 0,
+      "invented": []
+    },
+    {
+      "id": "g13",
+      "raw_json_valid": true,
+      "fallback": false,
+      "no_invention": false,
+      "no_prose": true,
+      "questions_ok": true,
+      "fact_recall": 0.42857142857142855,
+      "title_ok": true,
+      "n_invented": 3,
+      "invented": [
+        [
+          "people",
+          "non specificato"
+        ],
+        [
+          "places",
+          "luogo non specificato"
+        ],
+        [
+          "events",
+          "piovoso"
+        ]
+      ]
+    },
+    {
+      "id": "g14",
+      "raw_json_valid": true,
+      "fallback": false,
+      "no_invention": false,
+      "no_prose": true,
+      "questions_ok": true,
+      "fact_recall": 0.5,
+      "title_ok": true,
+      "n_invented": 1,
+      "invented": [
+        [
+          "emotions",
+          "Non specificato"
+        ]
+      ]
+    },
+    {
+      "id": "g15",
+      "raw_json_valid": true,
+      "fallback": false,
+      "no_invention": true,
+      "no_prose": true,
+      "questions_ok": false,
+      "fact_recall": 0.2857142857142857,
+      "title_ok": true,
+      "n_invented": 0,
+      "invented": []
+    },
+    {
+      "id": "g16",
+      "raw_json_valid": true,
+      "fallback": false,
+      "no_invention": false,
+      "no_prose": true,
+      "questions_ok": true,
+      "fact_recall": 0.42857142857142855,
+      "title_ok": true,
+      "n_invented": 1,
+      "invented": [
+        [
+          "emotions",
+          "incolpa"
+        ]
+      ]
+    },
+    {
+      "id": "g17",
+      "raw_json_valid": false,
+      "fallback": true,
+      "no_invention": true,
+      "no_prose": true,
+      "questions_ok": false,
+      "fact_recall": 0.0,
+      "title_ok": false,
+      "n_invented": 0,
+      "invented": []
+    },
+    {
+      "id": "g18",
+      "raw_json_valid": true,
+      "fallback": false,
+      "no_invention": true,
+      "no_prose": true,
+      "questions_ok": false,
+      "fact_recall": 0.6,
+      "title_ok": true,
+      "n_invented": 0,
+      "invented": []
+    }
+  ]
+}

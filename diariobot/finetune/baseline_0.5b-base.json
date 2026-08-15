@@ -1,0 +1,286 @@
+{
+  "label": "0.5b-base-q4",
+  "n": 18,
+  "metrics": {
+    "raw_json_valid": 72.2,
+    "fallback": 27.8,
+    "no_invention": 61.1,
+    "no_prose": 100.0,
+    "questions_ok": 11.1,
+    "title_ok": 72.2
+  },
+  "fact_recall_avg": 0.273,
+  "per_example": [
+    {
+      "id": "g01",
+      "raw_json_valid": true,
+      "fallback": false,
+      "no_invention": false,
+      "no_prose": true,
+      "questions_ok": false,
+      "fact_recall": 0.5333333333333333,
+      "title_ok": true,
+      "n_invented": 1,
+      "invented": [
+        [
+          "solutions",
+          "non specificato"
+        ]
+      ]
+    },
+    {
+      "id": "g02",
+      "raw_json_valid": true,
+      "fallback": false,
+      "no_invention": true,
+      "no_prose": true,
+      "questions_ok": false,
+      "fact_recall": 0.3333333333333333,
+      "title_ok": true,
+      "n_invented": 0,
+      "invented": []
+    },
+    {
+      "id": "g03",
+      "raw_json_valid": true,
+      "fallback": false,
+      "no_invention": false,
+      "no_prose": true,
+      "questions_ok": true,
+      "fact_recall": 0.5,
+      "title_ok": true,
+      "n_invented": 1,
+      "invented": [
+        [
+          "people",
+          "altro due"
+        ]
+      ]
+    },
+    {
+      "id": "g04",
+      "raw_json_valid": true,
+      "fallback": false,
+      "no_invention": false,
+      "no_prose": true,
+      "questions_ok": false,
+      "fact_recall": 0.7142857142857143,
+      "title_ok": true,
+      "n_invented": 4,
+      "invented": [
+        [
+          "people",
+          "miersi"
+        ],
+        [
+          "people",
+          "miaggi"
+        ],
+        [
+          "people",
+          "miha"
+        ]
+      ]
+    },
+    {
+      "id": "g05",
+      "raw_json_valid": true,
+      "fallback": false,
+      "no_invention": true,
+      "no_prose": true,
+      "questions_ok": false,
+      "fact_recall": 0.5,
+      "title_ok": true,
+      "n_invented": 0,
+      "invented": []
+    },
+    {
+      "id": "g06",
+      "raw_json_valid": true,
+      "fallback": false,
+      "no_invention": false,
+      "no_prose": true,
+      "questions_ok": false,
+      "fact_recall": 0.4,
+      "title_ok": true,
+      "n_invented": 3,
+      "invented": [
+        [
+          "emotions",
+          "inansia"
+        ],
+        [
+          "emotions",
+          "più nervoso"
+        ],
+        [
+          "emotions",
+          "più tranquillo"
+        ]
+      ]
+    },
+    {
+      "id": "g07",
+      "raw_json_valid": true,
+      "fallback": false,
+      "no_invention": true,
+      "no_prose": true,
+      "questions_ok": false,
+      "fact_recall": 0.4,
+      "title_ok": true,
+      "n_invented": 0,
+      "invented": []
+    },
+    {
+      "id": "g08",
+      "raw_json_valid": true,
+      "fallback": false,
+      "no_invention": true,
+      "no_prose": true,
+      "questions_ok": false,
+      "fact_recall": 0.4,
+      "title_ok": true,
+      "n_invented": 0,
+      "invented": []
+    },
+    {
+      "id": "g09",
+      "raw_json_valid": true,
+      "fallback": false,
+      "no_invention": false,
+      "no_prose": true,
+      "questions_ok": false,
+      "fact_recall": 0.125,
+      "title_ok": true,
+      "n_invented": 1,
+      "invented": [
+        [
+          "places",
+          "casa"
+        ]
+      ]
+    },
+    {
+      "id": "g10",
+      "raw_json_valid": false,
+      "fallback": true,
+      "no_invention": true,
+      "no_prose": true,
+      "questions_ok": false,
+      "fact_recall": 0.0,
+      "title_ok": false,
+      "n_invented": 0,
+      "invented": []
+    },
+    {
+      "id": "g11",
+      "raw_json_valid": false,
+      "fallback": true,
+      "no_invention": true,
+      "no_prose": true,
+      "questions_ok": false,
+      "fact_recall": 0.0,
+      "title_ok": false,
+      "n_invented": 0,
+      "invented": []
+    },
+    {
+      "id": "g12",
+      "raw_json_valid": true,
+      "fallback": false,
+      "no_invention": true,
+      "no_prose": true,
+      "questions_ok": true,
+      "fact_recall": 0.42857142857142855,
+      "title_ok": true,
+      "n_invented": 0,
+      "invented": []
+    },
+    {
+      "id": "g13",
+      "raw_json_valid": true,
+      "fallback": false,
+      "no_invention": true,
+      "no_prose": true,
+      "questions_ok": false,
+      "fact_recall": 0.14285714285714285,
+      "title_ok": true,
+      "n_invented": 0,
+      "invented": []
+    },
+    {
+      "id": "g14",
+      "raw_json_valid": true,
+      "fallback": false,
+      "no_invention": false,
+      "no_prose": true,
+      "questions_ok": false,
+      "fact_recall": 0.3,
+      "title_ok": true,
+      "n_invented": 1,
+      "invented": [
+        [
+          "events",
+          "castro"
+        ]
+      ]
+    },
+    {
+      "id": "g15",
+      "raw_json_valid": true,
+      "fallback": false,
+      "no_invention": false,
+      "no_prose": true,
+      "questions_ok": false,
+      "fact_recall": 0.14285714285714285,
+      "title_ok": true,
+      "n_invented": 2,
+      "invented": [
+        [
+          "people",
+          "lamento"
+        ],
+        [
+          "people",
+          "gratitudine"
+        ]
+      ]
+    },
+    {
+      "id": "g16",
+      "raw_json_valid": false,
+      "fallback": true,
+      "no_invention": true,
+      "no_prose": true,
+      "questions_ok": false,
+      "fact_recall": 0.0,
+      "title_ok": false,
+      "n_invented": 0,
+      "invented": []
+    },
+    {
+      "id": "g17",
+      "raw_json_valid": false,
+      "fallback": true,
+      "no_invention": true,
+      "no_prose": true,
+      "questions_ok": false,
+      "fact_recall": 0.0,
+      "title_ok": false,
+      "n_invented": 0,
+      "invented": []
+    },
+    {
+      "id": "g18",
+      "raw_json_valid": false,
+      "fallback": true,
+      "no_invention": true,
+      "no_prose": true,
+      "questions_ok": false,
+      "fact_recall": 0.0,
+      "title_ok": false,
+      "n_invented": 0,
+      "invented": []
+    }
+  ]
+}

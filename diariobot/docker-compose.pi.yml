@@ -1,0 +1,35 @@
+# Host-Pi: override per deployare lo STESSO stack su un Raspberry Pi 3 / 1 GB
+# come host alternativo al mini PC (D5 — profilo, non fork).
+#
+# Uso (da diariobot/, GGUF 0.5B in models/):
+#   docker compose -f docker-compose.yml -f docker-compose.pi.yml --profile model up
+#   (o: make pi-up)
+#
+# Vincoli dichiarati:
+#   - modello 0.5B OBBLIGATORIO: budget RAM ~860 MB totali misurati con llama
+#     0.5B Q4 (~657 MB peak) + gateway + nginx + OS minimale (vedi spike/REPORT.md).
+#     Il 1.5B NON ci sta su 1 GB: per quello c'è il mini PC.
+#   - thread llama: -t 4 (quad-core Cortex-A53 del Pi 3 — invariato dal base).
+#   - il browser NON gira su questo host (budget insufficiente): i client si
+#     collegano da altro device via LAN, cambiando solo l'indirizzo.
+#
+# ARM (Open Question 4.1): python:3.11-slim è multi-arch (linux/arm/v7 e
+# arm64) → l'immagine gateway/skill si builda così com'è sul Pi. Verificare al
+# primo build che anche ghcr.io/ggml-org/llama.cpp:server abbia il variant
+# arm del Pi (in caso contrario serve immagine llama.cpp ARM dedicata —
+# registrarla come follow-up).
+
+services:
+  llama:
+    # 0.5B fisso: l'override sostituisce il command del base (niente MODEL_FILE
+    # configurabile qui — è un vincolo dell'host, non una preferenza)
+    command: >
+      -m /models/qwen2.5-0.5b-instruct-q4_k_m.gguf
+      --host 0.0.0.0 --port 8081
+      -t 4 -c 2048 --temp 0.2
+    deploy:
+      resources:
+        limits:
+          # guard rail: se llama supera il budget, fallisce visibilmente invece
+          # di mandare in OOM l'intero Pi (budget ~860 MB, OS incluso)
+          memory: 700M

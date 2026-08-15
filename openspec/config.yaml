@@ -1,0 +1,28 @@
+schema: spec-driven
+
+# Project context (optional)
+# This is shown to AI when creating artifacts.
+# Add your tech stack, conventions, style guides, domain knowledge, etc.
+# Example:
+#   context: |
+#     Tech stack: TypeScript, React, Node.js
+#     We use conventional commits
+#     Domain: e-commerce platform
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always include a "Non-goals" section
+#     tasks:
+#       - Break tasks into chunks of max 2 hours
+
+# Per-operation guidance (optional) — advisory, scoped to apply/archive.
+# Flows into `openspec instructions` as the `operationGuidance` field (apply-specific,
+# NOT injected into artifact creation — unlike context/rules above).
+operations:
+  apply:
+    guidance:
+      - "Implement EACH task using the Superpowers TDD skill (`superpowers:test-driven-development`): write a failing test/verification first, then implement until green, BEFORE marking the task done."

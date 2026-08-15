@@ -1,0 +1,21 @@
+# --- Fonti e documenti guida (non fanno parte del codice) -----------------
+documenti/
+
+# --- Ambiente locale della sandbox (non progetto) -------------------------
+.config/
+
+# --- Runtime ---------------------------------------------------------------
+diariobot/sessions/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# --- Modelli GGUF (scaricati a parte, vedi diariobot/README) --------------
+diariobot/models/*.gguf
+diariobot/models/*.bin
+
+# --- OS / editor -----------------------------------------------------------
+.DS_Store
+.idea/
+.vscode/
+.claude/

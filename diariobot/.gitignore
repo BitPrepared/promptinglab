@@ -1,0 +1,22 @@
+# Modelli (scaricati a parte, vedi README)
+models/*.gguf
+models/*.bin
+
+# Sessioni osservabilità (log metadati, generato a runtime)
+sessions/
+
+# Binari llama.cpp precompilati usati dallo spike (scaricati, non committati)
+.llamacpp/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

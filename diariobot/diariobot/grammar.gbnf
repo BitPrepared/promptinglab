@@ -1,0 +1,26 @@
+# Grammatica GBNF per l'output strutturato della skill Diario di Bordo.
+# Usata dal backend `local` (llama-cpp-python) per VINCOLARE la generazione a un
+# JSON con scaffold + domande + check. Nessuna prosa.
+#
+# Il backend HTTP (llama-server, /v1/chat/completions) NON usa più questa grammatica:
+# nelle build recenti `grammar` top-level è supportato solo su /completion, quindi
+# l'adapter invia `response_format` con `json_schema` (vedi SCAFFOLD_JSON_SCHEMA in
+# schema.py), che descrive la stessa struttura.
+#
+# Nota: la grammatica garantisce la STRUTTURA; il divieto di inventare fatti
+# e di produrre prosa è rafforzato dal prompt (prompts.py) e dalla validazione
+# (validate.py). Si rifinisce in FASE 2 insieme al fine-tune.
+
+root   ::= "{" ws "\"title\":" ws string "," ws "\"date\":" ws string "," ws "\"scaffold\":" ws scaffold "," ws "\"questions\":" ws qarr "," ws "\"checks\":" ws carr "}"
+
+scaffold ::= "{" ws "\"people\":" ws strs "," ws "\"places\":" ws strs "," ws "\"events\":" ws strs "," ws "\"observations\":" ws strs "," ws "\"emotions\":" ws strs "," ws "\"problems\":" ws strs "," ws "\"solutions\":" ws strs "," ws "\"reflections\":" ws strs "}"
+
+strs   ::= "[" ws (string ("," ws string)*)? ws "]"
+qarr   ::= "[" ws (string ("," ws string)*)? ws "]"
+carr   ::= "[" ws (check ("," ws check)*)? ws "]"
+check  ::= "{" ws "\"where\":" ws string "," ws "\"issue\":" ws string "," ws "\"kind\":" ws kind "}"
+kind   ::= "\"clarity\"" | "\"orthography\""
+
+string ::= "\"" char* "\""
+char   ::= [^"\\\n] | "\\" ["\\nrt]
+ws     ::= [ \t\n]*

@@ -1,0 +1,30 @@
+# systemd: avvia il kiosk browser al boot sul Raspberry Pi 3.
+# Installazione (sul Pi):
+#   sudo cp kiosk/kiosk-browser.sh /usr/local/bin/ && sudo chmod +x /usr/local/bin/kiosk-browser.sh
+#   sudo cp kiosk/lab-kiosk.service /etc/systemd/system/
+#   sudo systemctl edit lab-kiosk.service   # imposta LAB_HOST=<ip-del-mini-pc>
+#   sudo systemctl enable --now lab-kiosk.service
+#
+# Il servizio gira nella sessione grafica dell'utente `pi`: richiede che il Pi
+# avvii la GUI (raspi-config → Desktop Autologin) o un X minimale. In alternativa
+# più leggera, usa l'autostart di LXDE (vedi README.md).
+
+[Unit]
+Description=Laboratorio web — kiosk browser (Campo 2026)
+After=graphical.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/pi/.Xauthority
+# IMPOSTA QUI l'IP fisso del mini PC sulla LAN cablata:
+Environment=LAB_HOST=192.168.1.10
+Environment=LAB_PORT=8090
+ExecStart=/usr/local/bin/kiosk-browser.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=graphical.target

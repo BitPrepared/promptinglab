@@ -1,0 +1,13 @@
+# DiarioBot — Skill "Diario di Bordo"
+#
+# Il core della skill usa SOLO la libreria standard Python: nessuna dipendenza
+# obbligatoria per girare (valido anche sul Raspberry Pi 3 / 1 GB).
+#
+# Il backend del modello reale è un llama-server esterno (vedi docker-compose.yml);
+# non serve therefore un binding Python in produzione.
+#
+# Opzionale (solo per uso in-process del modello, sviluppo locale con GPU/CPU):
+#   llama-cpp-python==0.3.5
+#
+# Sviluppo / test (opzionali, il progetto usa stdlib unittest di default):
+#   pytest==8.*
