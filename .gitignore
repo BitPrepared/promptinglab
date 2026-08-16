@@ -4,6 +4,10 @@ documenti/
 # --- Ambiente locale della sandbox (non progetto) -------------------------
 .config/
 
+# --- OpenSpec: solo le spec consolidate; i change (attivi e archiviati)
+#     sono stati intermedi di lavoro, non contratto --------------------------
+openspec/changes/
+
 # --- Runtime ---------------------------------------------------------------
 diariobot/sessions/
 **/__pycache__/
