@@ -80,6 +80,7 @@ class DiarioSkill:
             self.grammar = grammar
         self.demo = demo
         self.last_usage = None   # usage dell'ultima chiamata al backend (token ④)
+        self.last_trace = None   # wire JSON dell'ultima chiamata (change trace-llm)
 
     def run(
         self,
@@ -91,6 +92,7 @@ class DiarioSkill:
         sink = demo or self.demo
         sink = sink or DemoSink(verbose=False)
         self.last_usage = None   # niente staleness se il gate risponde senza modello
+        self.last_trace = None   # idem per la trace: senza chiamata, niente trace
 
         sink.event("start", "🔧 Sto leggendo i tuoi appunti…")
 
@@ -135,6 +137,9 @@ class DiarioSkill:
         # il servizio per la riga "token del workflow" nella tappa ④ — vale
         # l'ultima generate (quella buona)
         self.last_usage = getattr(self.backend, "last_usage", None)
+        # wire JSON dell'ultima generate (quella buona): la skill lo allega alla
+        # risposta come campo opzionale `trace` (change trace-llm, pattern events)
+        self.last_trace = getattr(self.backend, "last_trace", None)
 
         sink.event("questions", "❓ Aggiungo le domande per approfondire.")
         sink.event("done", "✍️ Scaffold pronto. Ora il diario lo scrivi tu, partendo da qui.")

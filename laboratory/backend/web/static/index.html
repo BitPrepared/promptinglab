@@ -165,6 +165,21 @@
   #output { margin-top: 14px; }
   #output .msg { background: var(--panel-2); border-left: 3px solid var(--accent); padding: 10px 12px; border-radius: 6px; margin-bottom: 12px; }
   .scaffold h4 { margin: 14px 0 4px; color: var(--accent); font-size: .98rem; text-transform: uppercase; letter-spacing: .03em; }
+  /* bottone { } e popup della trace LLM (change trace-llm) */
+  .trace-btn { background: none; border: 1px solid var(--line, #2a2f3a); color: var(--dim, #9aa0aa);
+    border-radius: 6px; font: 0.72rem ui-monospace,Menlo,Consolas,monospace;
+    padding: 0 5px; margin-left: 8px; cursor: pointer; vertical-align: middle; }
+  .trace-btn:hover { color: var(--accent, #6ea8fe); border-color: var(--accent, #6ea8fe); }
+  .tracemod { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: flex;
+    align-items: center; justify-content: center; z-index: 60; }
+  .tracemod .box { background: #171a21; color: #e8eaed; border: 1px solid #2a2f3a;
+    border-radius: 12px; max-width: min(92vw, 860px); max-height: 84vh; overflow: auto;
+    padding: 14px 16px; }
+  .tracemod .box h3 { margin: 0 0 6px; font-size: .95rem; }
+  .tracemod pre { white-space: pre-wrap; word-break: break-word; margin: 2px 0 12px;
+    font: 0.78rem/1.45 ui-monospace,Menlo,Consolas,monospace; }
+  .tracemod .x { float: right; background: none; border: 0; color: #9aa0aa;
+    font-size: 1.1rem; cursor: pointer; }
   .scaffold .title { font-size: 1.2rem; font-weight: 700; margin: 4px 0; }
   .scaffold .date { color: var(--dim); }
   .scaffold ul { margin: 0 0 4px; padding-left: 20px; }
@@ -445,6 +460,43 @@ function checkModel() {
  * reali (usage.prompt_tokens dal gateway), niente stime. */
 var CHATS = [];
 var CTX_LIMIT = 2048;            // finestra di contesto del servizio modello (-c 2048)
+/* ============ Popup della trace LLM (change trace-llm) =====================
+ * Mostra il JSON esattamente inviato all'endpoint del modello e quello
+ * restituito: la lezione è il dialogo col servizio, non solo il risultato
+ * impaginato. I valori arrivano a runtime dalla API (niente parametri
+ * hardcodati qui: vincolo del tier statico). */
+function showTrace(trace) {
+  var mod = document.createElement("div");
+  mod.className = "tracemod";
+  var box = document.createElement("div");
+  box.className = "box";
+  var x = document.createElement("button");
+  x.className = "x"; x.type = "button"; x.textContent = "✕";
+  x.onclick = function () { mod.remove(); };
+  var h = document.createElement("h3");
+  h.textContent = "Dialogo con l'endpoint del modello";
+  var r1 = document.createElement("h3"); r1.textContent = "Request (inviato)";
+  var p1 = document.createElement("pre");
+  p1.textContent = JSON.stringify(trace && trace.request, null, 2) || "—";
+  var r2 = document.createElement("h3"); r2.textContent = "Response (ricevuto)";
+  var p2 = document.createElement("pre");
+  p2.textContent = JSON.stringify(trace && trace.response, null, 2) || "—";
+  box.appendChild(x); box.appendChild(h); box.appendChild(r1); box.appendChild(p1);
+  box.appendChild(r2); box.appendChild(p2);
+  mod.appendChild(box);
+  mod.addEventListener("click", function (ev) { if (ev.target === mod) mod.remove(); });
+  document.body.appendChild(mod);
+}
+function addTraceBtn(host, trace) {
+  if (!trace) return;
+  var b = document.createElement("button");
+  b.className = "trace-btn"; b.type = "button";
+  b.title = "cosa è partito davvero: request e response verso il modello";
+  b.textContent = "{ }";
+  b.onclick = function (ev) { ev.stopPropagation(); showTrace(trace); };
+  host.appendChild(b);
+}
+
 function makeChat(root, opts) {
   opts = opts || {};
   var maxOut = opts.maxOut || 256;   // default difensivo del gateway (_CHAT_DEFAULT_MAX_TOKENS)
@@ -530,15 +582,18 @@ function makeChat(root, opts) {
       if (!res.ok || j.error) {
         var errTxt = String(j.error || ("errore " + res.status));
         // finestra di contesto esaurita → la lezione, non un errore grezzo
+        var eb;
         if (/context|contesto/i.test(errTxt)) {
-          bubble(null, "🧠 Contesto pieno — l'IA non ha più memoria. Premi «Nuova conversazione».", "err");
+          eb = bubble(null, "🧠 Contesto pieno — l'IA non ha più memoria. Premi «Nuova conversazione».", "err");
         } else {
-          bubble(null, "⚠️ " + errTxt, "err");
+          eb = bubble(null, "⚠️ " + errTxt, "err");
         }
+        addTraceBtn(eb, j.trace);  // D7: anche l'errore è dialogo col servizio
         sendBtn.disabled = false; return;
       }
       hist.push({ role: "assistant", content: j.reply });
       var ia = bubble("assistant", j.reply);
+      addTraceBtn(ia, j.trace);    // { }: request/response di QUESTO turno
       // badge ⚙ (tappa ③): la risposta è stata prodotta con la skill caricata
       if (opts.badge) {
         var btxt = opts.badge();
@@ -767,7 +822,13 @@ function elabora() {
   labFetch("/api/scaffold", { method: "POST", body: JSON.stringify({ notes: notes }) }, 4, 150000)
     .then(function (res) {
       if (!res.ok || (res.body && res.body.error)) throw new Error((res.body && res.body.error) || ("errore " + res.status));
-      riproduciEventi(res.body.events || [], function () { renderTokenRow(res.body.usage); renderOutput(res.body); });
+      riproduciEventi(res.body.events || [], function () {
+        renderTokenRow(res.body.usage); renderOutput(res.body);
+        // la chiamata LLM interna della skill, quando c'è (campo opzionale):
+        // { } sul risultato dello scaffold
+        var host = $out.querySelector(".scaffold") || $out;
+        addTraceBtn(host, res.body.trace);
+      });
     }).catch(function (err) { $ev.innerHTML = '<div class="chat-msg err">⚠️ ' + testoSicuro(err.message) + "</div>"; })
     .finally(function () { $go.disabled = false; });
 }

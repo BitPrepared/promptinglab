@@ -114,6 +114,30 @@ class LlamaBackendTest(unittest.TestCase):
         with self.assertRaises(LlamaBackendError):
             be.generate("sys", "usr")
 
+    def test_last_trace_matches_wire(self) -> None:
+        # change trace-llm (D1): la trace È il filo — request identica a ciò
+        # che il fake ha ricevuto, response identica a ciò che ha risposto
+        m = LlamaServerModel(self.url)
+        m.generate("SYS", "USER", grammar=True)
+        self.assertEqual(m.last_trace["request"], self.rec.last_body)
+        self.assertEqual(m.last_trace["response"], self.rec.payload)
+        self.assertIn("response_format", m.last_trace["request"])
+
+    def test_last_trace_overwritten_each_call(self) -> None:
+        # come last_usage: vale l'ultima generate (anche dopo il retry della skill)
+        m = LlamaServerModel(self.url)
+        m.generate("SYS", "U1")
+        m.generate("SYS", "U2")
+        self.assertEqual(m.last_trace["request"]["messages"][1]["content"], "U2")
+
+    def test_last_trace_none_without_successful_call(self) -> None:
+        m = LlamaServerModel(self.url)
+        self.assertIsNone(m.last_trace)
+        self.rec.status = 500
+        with self.assertRaises(LlamaBackendError):
+            m.generate("S", "U")
+        self.assertIsNone(m.last_trace)  # chiamate fallite: niente trace
+
     def test_last_usage_captured(self) -> None:
         # il backend espone gli usage della chiamata (token del workflow ④)
         self.rec.payload["usage"] = {"prompt_tokens": 321, "completion_tokens": 65}

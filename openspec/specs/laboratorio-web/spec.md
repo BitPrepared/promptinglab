@@ -89,7 +89,7 @@ L'intero stack — servizio modello (taglia 0.5B), gateway e server statico, **s
 
 ### Requirement: Separazione delle responsabilità per tier
 
-Il tier di presentazione (pagina statica) SHALL contenere solo file statici senza logica di backend né parametri del modello; il gateway SHALL possedere la normalizzazione dei parametri di chat (clamp di temperatura/token, limiti di turni) e l'osservabilità (sessioni, solo metadati); il servizio modello SHALL occuparsi solo di inferenza. La skill (`diario-di-bordo`) resta un contratto separato e invariato.
+Il tier di presentazione (pagina statica) SHALL contenere solo file statici senza logica di backend né parametri del modello; il gateway SHALL possedere la normalizzazione dei parametri di chat (clamp di temperatura/token, limiti di turni) e l'osservabilità delle sessioni (metadati: chi, quando, tappa, esito, durata — e contenuto completo delle interazioni: input e output); il servizio modello SHALL occuparsi solo di inferenza. La skill (`diario-di-bordo`) resta un contratto separato e invariato.
 
 #### Scenario: Parametri difensivi nel gateway, non nel client
 
@@ -100,6 +100,11 @@ Il tier di presentazione (pagina statica) SHALL contenere solo file statici senz
 
 - **WHEN** la pagina viene servita dal tier statico
 - **THEN** riceve solo asset statici; nessuna elaborazione, nessun parametro del modello, nessuno stato risiedono nel tier di presentazione
+
+#### Scenario: Osservabilità con contenuti
+
+- **WHEN** una interazione (chat o scaffold) attraversa il gateway
+- **THEN** questa viene registrata con metadati e contenuto completo di input e output, senza modalità di registrazione ridotta: il contenuto è sempre persistito nell'archivio e consultabile dal pannello educatore
 
 ### Requirement: Pagina leggera per browser su 1 GB
 
@@ -288,3 +293,90 @@ Il gateway SHALL includere nella risposta di `/api/chat` i conteggi di token for
 
 - **WHEN** un client esistente (CLI o versione precedente della pagina) usa la risposta di `/api/chat` senza leggere `usage`
 - **THEN** il client funziona esattamente come prima
+
+### Requirement: Pannello educatore consultabile
+
+Il pannello educatore (`/admin`) SHALL mostrare l'elenco delle sessioni con identificativo client e indirizzo IP, SHALL permettere di scegliere la finestra temporale dell'elenco (5, 10, 15, 30 minuti oppure tutto lo storico persistente) e SHALL permettere di filtrare l'elenco per IP. La timeline di una sessione SHALL mostrare tutte le interazioni registrate (senza troncamenti) e, al click su una interazione, SHALL espandere il contenuto completo di input e output. L'elenco di sessioni esposto dal gateway (`GET /api/sessions`) SHALL accettare la finestra e il filtro IP come parametri, applicando vincoli lato server sui valori ammessi.
+
+#### Scenario: Finestra selezionabile
+
+- **WHEN** l'educatore sceglie una finestra tra 5, 10, 15, 30 minuti
+- **THEN** l'elenco mostra le sessioni con attività nella finestra scelta, e la didascalia dell'elenco la riporta
+
+#### Scenario: Finestra "tutto"
+
+- **WHEN** l'educatore sceglie "Tutto"
+- **THEN** l'elenco mostra ogni sessione presente nell'archivio persistente, anche senza attività recente o dopo un riavvio del gateway
+
+#### Scenario: IP nel riquadro sessione
+
+- **WHEN** l'elenco mostra una sessione
+- **THEN** il riquadro riporta identificativo client e indirizzo IP da cui la sessione ha interagito
+
+#### Scenario: Filtro per IP
+
+- **WHEN** l'educatore filtra per un IP
+- **THEN** l'elenco mostra tutte le sessioni con almeno una interazione proveniente da quell'IP, e il filtro attivo è visibile e rimovibile
+
+#### Scenario: Interazione espandibile al click
+
+- **WHEN** l'educatore clicca una voce della timeline di una sessione
+- **THEN** la voce espande il contenuto completo dell'interazione (testo in ingresso e in uscita), riportando anche i metadati già visibili
+
+#### Scenario: Storico di sessione non troncato
+
+- **WHEN** una sessione accumula più di 200 interazioni nella vita del processo
+- **THEN** la timeline le mostra tutte, senza troncamento
+
+#### Scenario: Memoria trasportata visibile
+
+- **WHEN** una interazione di chat viene registrata
+- **THEN** la riga dichiara quanti messaggi la richiesta trasportava (turni): la chat senza memoria dell'esperimento a due tab resta a 1 turno, quella con memoria cresce
+
+#### Scenario: Vista conversazione
+
+- **WHEN** l'educatore attiva la vista conversazione della timeline
+- **THEN** le interazioni di chat vengono presentate come transcript ricostruito (messaggi in ingresso e risposte in ordine cronologico), con le altre interazioni come separatori espandibili
+
+### Requirement: Archivio sessioni persistente e pulibile
+
+Lo storico delle sessioni e delle interazioni SHALL sopravvivere ai riavvii del gateway, incluso il rebuild degli container: all'avvio il gateway SHALL ricaricare l'archivio e il pannello SHALL mostrare elenco e timeline come prima del riavvio. Il progetto SHALL fornire un comando dedicato (`make clean-sessions`) che azzera l'archivio delle sessioni.
+
+#### Scenario: Storico consultabile dopo un riavvio
+
+- **WHEN** il gateway viene riavviato (o la stack ricostruita) dopo aver registrato interazioni
+- **THEN** l'elenco con finestra "Tutto" e le timeline delle sessioni mostrano le interazioni registrate prima del riavvio
+
+#### Scenario: Pulizia dell'archivio
+
+- **WHEN** si esegue il comando dedicato alla pulizia e il gateway riparte
+- **THEN** l'archivio è vuoto: nessuna sessione o interazione precedente risulta consultabile dal pannello
+
+### Requirement: Trace della chiamata al modello visibile
+
+Per ogni dialogo con il modello — le chat delle tappe ① Context Injection, ② System Prompt, ④ Workflow e lo scaffold della tappa ③ Skills — la pagina SHALL permettere di aprire, con un pulsante dedicato sul dialogo, una vista che mostra il JSON esattamente inviato all'endpoint del modello e il JSON restituito. Per le chat la trace riflette ciò che il gateway inoltra dopo la normalizzazione (messaggi e parametri applicati); per lo scaffold la chiamata interna della skill al modello, incluso l'eventuale vincolo di schema strutturato. Il gateway SHALL includere la trace nelle risposte delle rotte coinvolte e SHALL persistere richiesta e risposta per ogni interazione, così che il pannello educatore offra la stessa vista sulle righe della timeline e della vista conversazione, tramite un endpoint di dettaglio per interazione.
+
+#### Scenario: Popup dal turno di chat
+
+- **WHEN** l'utente apre il pulsante del turno nella pagina
+- **THEN** la vista mostra la request (body inoltrato al servizio modello: messaggi e parametri applicati) e la response (payload grezzo restituito), pretty-printed e senza elaborazione
+
+#### Scenario: Trace dello scaffold
+
+- **WHEN** l'utente apre il pulsante sul risultato della skill
+- **THEN** la vista mostra la chiamata al modello effettuata dalla skill — messaggi, parametri e vincolo di schema quando presente — e il payload grezzo ricevuto, non solo appunti e SkillOutput
+
+#### Scenario: Stessa vista nel pannello educatore
+
+- **WHEN** un'interazione con trace registrata compare nella timeline del pannello
+- **THEN** la riga offre il pulsante e lo apre sulla stessa vista request/response servita dal dettaglio persistito
+
+#### Scenario: Assenza onesta
+
+- **WHEN** un dialogo non ha una chiamata al modello da mostrare (percorso di onboarding, modalità demo)
+- **THEN** il pulsante non compare, senza placeholder né trace sintetiche
+
+#### Scenario: Errore mostrato per ciò che è
+
+- **WHEN** la chiamata al modello fallisce con una risposta d'errore
+- **THEN** la vista mostra il body d'errore ricevuto come response

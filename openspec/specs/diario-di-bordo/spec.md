@@ -117,3 +117,22 @@ Il sistema SHALL operare in italiano: prompt, output strutturato, domande e chec
 
 - **WHEN** la squadriglia fornisce appunti in italiano
 - **THEN** scaffold, domande e check sono restituiti in italiano
+
+### Requirement: Trasparenza della chiamata al modello
+
+Quando la skill invoca il modello, la risposta di `/scaffold` SHALL includere un campo opzionale `trace` contenente il JSON inviato all'endpoint del modello (messaggi, parametri, eventuale `response_format` con lo schema) e il JSON grezzo restituito. Il campo è retrocompatibile: i consumer che non lo leggono ricevono lo stesso `SkillOutput` di prima (stesso trattamento del campo `events` della demo). Il campo MUST NOT essere presente quando la risposta è stata prodotta senza chiamare il modello (percorso di onboarding o backend demo).
+
+#### Scenario: Chiamata tracciata
+
+- **WHEN** la skill elabora appunti con una chiamata al modello
+- **THEN** la risposta contiene `trace.request` con il body inoltrato al servizio modello e `trace.response` con il payload grezzo ricevuto
+
+#### Scenario: Assenza senza modello
+
+- **WHEN** la risposta viene prodotta senza chiamata al modello
+- **THEN** la risposta non contiene il campo `trace`
+
+#### Scenario: Retrocompatibilità dei consumer
+
+- **WHEN** un consumer esistente (CLI o validatore) legge la risposta ignorando `trace`
+- **THEN** ottiene esattamente lo stesso `SkillOutput` e lo stesso esito di validazione di prima

@@ -2,7 +2,9 @@
 
 Reference hosting dell'interfaccia di servizio; laboratorio-web può esporre
 questo stesso endpoint (o wrapparlo). Contratto:
-  POST /scaffold  {"notes": "..."} -> SkillOutput JSON (+ "events" per la demo)
+  POST /scaffold  {"notes": "..."} -> SkillOutput JSON (+ "events" per la demo,
+                   + "usage" e "trace" opzionali: la wire JSON della chiamata al
+                   modello quando c'è — change trace-llm)
   GET  /health    -> {"ok": true, "backend": "..."}
   GET  /          -> info servizio
 
@@ -111,6 +113,11 @@ class Handler(BaseHTTPRequestHandler):
         # campo omesso altrimenti — estensione retrocompatibile
         if skill.last_usage is not None:
             resp["usage"] = skill.last_usage
+        # trace della chiamata al modello (request/response sul filo), per la
+        # vista "cosa è partito davvero" della pagina — campo opzionale come
+        # `events`/`usage`: assente senza chiamata al modello (change trace-llm)
+        if getattr(skill, "last_trace", None) is not None:
+            resp["trace"] = skill.last_trace
         self._send(200, resp)
 
     def log_message(self, fmt, *args) -> None:  # silenzioso di default

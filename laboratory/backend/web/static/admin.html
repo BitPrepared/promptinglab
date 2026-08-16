@@ -67,6 +67,21 @@
     border-left:3px solid var(--warn); background:var(--panel-2); }
   a.back { color:var(--accent); text-decoration:none; }
   .load { color:var(--dim); }
+  /* bottone { } e popup della trace LLM (change trace-llm) */
+  .trace-btn { background:none; border:1px solid var(--line); color:var(--dim);
+    border-radius:6px; font:0.72rem ui-monospace,Menlo,Consolas,monospace;
+    padding:0 5px; margin-left:8px; cursor:pointer; vertical-align:middle; }
+  .trace-btn:hover { color:var(--accent); border-color:var(--accent); }
+  .tracemod { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex;
+    align-items:center; justify-content:center; z-index:60; }
+  .tracemod .box { background:var(--panel); color:var(--ink); border:1px solid var(--line);
+    border-radius:12px; max-width:min(92vw,860px); max-height:84vh; overflow:auto;
+    padding:14px 16px; }
+  .tracemod .box h3 { margin:0 0 6px; font-size:.95rem; }
+  .tracemod pre { white-space:pre-wrap; word-break:break-word; margin:2px 0 12px;
+    font:0.78rem/1.45 ui-monospace,Menlo,Consolas,monospace; }
+  .tracemod .x { float:right; background:none; border:0; color:var(--dim);
+    font-size:1.1rem; cursor:pointer; }
 </style>
 </head>
 <body>
@@ -200,6 +215,7 @@ function loadTimeline(cid) {
         '<div class="lab">Ingresso</div><pre>' + esc(it.in || "—") + "</pre>" +
         '<div class="lab">Uscita</div><pre>' + esc(it.out || "—") + "</pre>" +
         "</div>";
+      if (it.has_trace) li.appendChild(traceBtn(cid, it.ts));
       li.onclick = function () {
         if (OPEN[key]) { delete OPEN[key]; li.classList.remove("open"); }
         else { OPEN[key] = 1; li.classList.add("open"); }
@@ -227,6 +243,7 @@ function renderConversation(d) {
         '<div class="cmeta">' + new Date(it.ts * 1000).toLocaleTimeString() +
         (it.turns ? " · " + it.turns + (it.turns === 1 ? " turno" : " turni") : "") +
         (it.status >= 400 ? " · err " + it.status : "") + "</div></div>";
+      if (it.has_trace) a.querySelector(".bub").appendChild(traceBtn(TL_CID, it.ts));
       tl.appendChild(a);
     } else {
       var key = it.ts + "|" + it.kind;
@@ -236,6 +253,7 @@ function renderConversation(d) {
         ' <span class="when">' + new Date(it.ts * 1000).toLocaleTimeString() + "</span>" +
         '<div class="it-body"><div class="lab">Ingresso</div><pre>' + esc(it.in || "—") + "</pre>" +
         '<div class="lab">Uscita</div><pre>' + esc(it.out || "—") + "</pre></div>";
+      if (it.has_trace) li.appendChild(traceBtn(TL_CID, it.ts));
       li.onclick = function () {
         if (OPEN[key]) { delete OPEN[key]; li.classList.remove("open"); }
         else { OPEN[key] = 1; li.classList.add("open"); }
@@ -243,6 +261,46 @@ function renderConversation(d) {
       tl.appendChild(li);
     }
   });
+}
+
+/* ============ Popup della trace LLM (change trace-llm) ====================
+ * Le righe della timeline portano solo il flag has_trace (poll leggero, D4):
+ * al click il bottone { } recupera la riga completa dal dettaglio persistito. */
+function showTrace(trace) {
+  var mod = document.createElement("div");
+  mod.className = "tracemod";
+  var box = document.createElement("div");
+  box.className = "box";
+  var x = document.createElement("button");
+  x.className = "x"; x.type = "button"; x.textContent = "✕";
+  x.onclick = function () { mod.remove(); };
+  var h = document.createElement("h3");
+  h.textContent = "Dialogo con l'endpoint del modello";
+  var r1 = document.createElement("h3"); r1.textContent = "Request (inviato)";
+  var p1 = document.createElement("pre");
+  p1.textContent = JSON.stringify(trace && trace.request, null, 2) || "—";
+  var r2 = document.createElement("h3"); r2.textContent = "Response (ricevuto)";
+  var p2 = document.createElement("pre");
+  p2.textContent = JSON.stringify(trace && trace.response, null, 2) || "—";
+  box.appendChild(x); box.appendChild(h); box.appendChild(r1); box.appendChild(p1);
+  box.appendChild(r2); box.appendChild(p2);
+  mod.appendChild(box);
+  mod.addEventListener("click", function (ev) { if (ev.target === mod) mod.remove(); });
+  document.body.appendChild(mod);
+}
+function traceBtn(cid, ts) {
+  var b = document.createElement("button");
+  b.className = "trace-btn"; b.type = "button";
+  b.title = "request e response verso il modello (dal dettaglio persistito)";
+  b.textContent = "{ }";
+  b.onclick = function (ev) {
+    ev.stopPropagation();
+    fetch("/api/sessions/" + encodeURIComponent(cid) + "/" + encodeURIComponent(ts))
+      .then(function (r) { return r.json(); })
+      .then(function (d) { if (d && d.trace) showTrace(d.trace); })
+      .catch(function () {});
+  };
+  return b;
 }
 
 function toggleView() {

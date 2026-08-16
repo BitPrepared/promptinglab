@@ -23,7 +23,7 @@ import time
 import unittest
 import urllib.error
 import urllib.request
-from http.server import ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from backend import cli, gateway, service
 from backend.schema import SkillOutput
@@ -282,6 +282,55 @@ class ChatBridgeTest(unittest.TestCase):
             return e.code, json.loads(e.read().decode("utf-8"))
 
     # --- /api/chat happy + normalizzazione --------------------------------
+
+    def test_chat_response_includes_trace(self) -> None:
+        """Change trace-llm (D1/D3): la risposta porta sempre la trace — il body
+        normalizzato inoltrato e il payload grezzo, identici al filo."""
+        status, body = self._post("/api/chat",
+                                  {"messages": [{"role": "user", "content": "ciao"}]})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["trace"]["request"], self.rec.last_body)
+        self.assertEqual(
+            body["trace"]["response"]["choices"][0]["message"]["content"], CANNED_REPLY)
+        # i parametri applicati dal gateway dopo la normalizzazione sono visibili
+        self.assertIn("stream", body["trace"]["request"])
+
+    def test_chat_trace_on_model_error(self) -> None:
+        """D7: su errore del modello la response mostrata è il body d'errore."""
+        self.rec.chat_status = 500
+        status, body = self._post("/api/chat",
+                                  {"messages": [{"role": "user", "content": "x"}]})
+        self.assertEqual(status, 502)
+        self.assertEqual(body["trace"]["request"], self.rec.last_body)
+        self.assertIn("choices", body["trace"]["response"])  # body d'errore ricevuto
+
+    def test_chat_trace_persisted_with_detail(self) -> None:
+        """D4/D5: la trace si persiste (req/resp) e sopravvive al riavvio; la
+        timeline resta leggera (has_trace), il dettaglio serve la riga piena."""
+        orig = gateway._TRACKER
+        tmp = tempfile.mkdtemp()
+        db = os.path.join(tmp, "s.db")
+        gateway._TRACKER = gateway.SessionTracker(db)
+        try:
+            self._post("/api/chat",
+                       {"messages": [{"role": "user", "content": "persistente"}]},
+                       {"X-Client-Id": "tr"})
+            _wait_tracked("tr")
+            row = gateway._TRACKER.timeline("tr")["interactions"][0]
+            self.assertTrue(row["has_trace"])
+            self.assertNotIn("trace", row)  # niente peso nel poll (D4)
+            d = gateway._TRACKER.detail("tr", row["ts"])
+            self.assertEqual(d["trace"]["request"]["messages"][0]["content"], "persistente")
+            # round-trip: nuovo tracker sullo stesso DB = gateway riavviato
+            t2 = gateway.SessionTracker(db)
+            row2 = t2.timeline("tr")["interactions"][0]
+            self.assertTrue(row2["has_trace"])
+            self.assertEqual(
+                t2.detail("tr", row2["ts"])["trace"]["response"]["choices"][0]
+                ["message"]["content"], CANNED_REPLY)
+        finally:
+            gateway._TRACKER = orig
+            shutil.rmtree(tmp, ignore_errors=True)
 
     def test_chat_records_full_content(self) -> None:
         """Design D3: si registra l'ultimo messaggio utente + la risposta,
@@ -600,6 +649,60 @@ class ObservabilityTest(unittest.TestCase):
         _, body = self._get("/api/sessions")
         self.assertEqual(body["active"][0]["last_ip"], "127.0.0.1")
 
+    def test_scaffold_trace_passthrough_and_persisted(self) -> None:
+        """Il campo `trace` della skill passa invariato alla pagina (proxy
+        trasparente) e viene persistito per il pannello (change trace-llm)."""
+        trace = {"request": {"messages": [{"role": "system", "content": "SYS"}],
+                             "temperature": 0.2},
+                 "response": {"choices": [{"message": {"content": "{\"title\":…}"}}]}}
+
+        class FakeSkill(BaseHTTPRequestHandler):
+            def do_POST(self):  # noqa: N802
+                n = int(self.headers.get("Content-Length") or 0)
+                self.rfile.read(n)
+                b = json.dumps({"scaffold": {}, "trace": trace}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(b)))
+                self.end_headers()
+                self.wfile.write(b)
+
+            def log_message(self, fmt, *args):  # silenzioso
+                pass
+
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), FakeSkill)
+        st = threading.Thread(target=srv.serve_forever, daemon=True)
+        st.start()
+        orig = gateway.SKILL_URL
+        gateway.SKILL_URL = f"http://127.0.0.1:{srv.server_address[1]}"
+        try:
+            status, body = self._post("/api/scaffold", {"notes": NOTES},
+                                      {"X-Client-Id": "sk"})
+        finally:
+            gateway.SKILL_URL = orig
+            srv.shutdown(); srv.server_close(); st.join(timeout=2)
+        self.assertEqual(status, 200)
+        self.assertEqual(body["trace"], trace)  # pass-through invariato
+        self._wait_session("sk")
+        row = gateway._TRACKER.timeline("sk")["interactions"][0]
+        self.assertTrue(row["has_trace"])
+        self.assertEqual(gateway._TRACKER.detail("sk", row["ts"])["trace"], trace)
+
+    def test_detail_endpoint(self) -> None:
+        """GET /api/sessions/<cid>/<ts>: riga completa; 404 se il ts non c'è.
+        Col backend mock della skill non c'è chiamata LLM: has_trace falso."""
+        self._post("/api/scaffold", {"notes": NOTES}, {"X-Client-Id": "x"})
+        self._wait_session("x")
+        _, tl = self._get("/api/sessions/x")
+        self.assertFalse(tl["interactions"][0]["has_trace"])
+        ts = tl["interactions"][0]["ts"]
+        status, row = self._get(f"/api/sessions/x/{ts}")
+        self.assertEqual(status, 200)
+        self.assertEqual(row["client"], "x")
+        self.assertNotIn("trace", row)
+        status, _ = self._get("/api/sessions/x/12345.678")
+        self.assertEqual(status, 404)
+
     def test_model_status_has_clients_and_model(self) -> None:
         _, body = self._get("/api/model-status")
         self.assertIn("clients", body)
@@ -760,6 +863,33 @@ class SessionPersistenceTest(unittest.TestCase):
             t2._sessions["old"]["last_seen"] = time.time() - 9999
         self.assertEqual(t2.active_list(None)["total"], 1)
         self.assertEqual(t2.active_list(300)["total"], 0)
+
+
+class TracePopupPageTest(unittest.TestCase):
+    """Popup della trace LLM (change trace-llm): bottone per dialogo e popup
+    request/response nella pagina; il pannello la serve da dettaglio persistito."""
+
+    def _read(self, rel: str) -> str:
+        with open(os.path.join(_REPO, rel), encoding="utf-8") as f:
+            return f.read()
+
+    def test_page_has_trace_button_and_popup(self) -> None:
+        body = self._read("backend/web/static/index.html")
+        self.assertIn("trace-btn", body)      # bottone { } sul dialogo
+        self.assertIn("addTraceBtn", body)    # attacco al turno/bubble/risultato
+        self.assertIn("showTrace", body)      # il popup
+        self.assertIn("JSON.stringify", body)  # pretty-print lato client
+        # i parametri del modello arrivano a runtime dalla API, mai hardcodati
+        # (vincolo del tier statico, design D6)
+        self.assertNotIn("repeat_penalty", body)
+
+    def test_admin_has_trace_button_with_detail_fetch(self) -> None:
+        body = self._read("backend/web/static/admin.html")
+        self.assertIn("has_trace", body)      # flag leggero dalle righe timeline
+        self.assertIn("trace-btn", body)      # bottone sulle righe
+        self.assertIn("showTrace", body)      # popup
+        # il dettaglio recupera la riga completa dal server (design D4)
+        self.assertIn("encodeURIComponent(ts)", body)  # fetch dentro traceBtn()
 
 
 class NginxTierTest(unittest.TestCase):

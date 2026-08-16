@@ -39,6 +39,64 @@ class ServiceTest(unittest.TestCase):
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read().decode("utf-8"))
 
+    @staticmethod
+    def _llama_skill(url: str):
+        """Skill col backend vero puntato a un fake llama in-process."""
+        from backend.models import LlamaServerModel
+        from backend.skill import DiarioSkill
+        return DiarioSkill(LlamaServerModel(url))
+
+    def test_scaffold_trace_with_model_call(self) -> None:
+        # change trace-llm: col backend modello la risposta include la trace
+        # della chiamata LLM vera (campo opzionale, pattern `events`)
+        import threading as _th
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        seen: list[dict] = []
+
+        class FakeLlama(BaseHTTPRequestHandler):
+            def do_POST(self):  # noqa: N802
+                n = int(self.headers.get("Content-Length") or 0)
+                seen.append(json.loads(self.rfile.read(n).decode("utf-8")))
+                body = json.dumps({
+                    "choices": [{"message": {"role": "assistant", "content": json.dumps({
+                        "title": "Al campo.", "date": "oggi",
+                        "scaffold": {"luogo": "campo", "persone": ["Anna"],
+                                     "eventi": ["cucinato"], "aggiustaggi": []},
+                        "questions": ["Chi altro c'era?"], "checks": []})}}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, fmt, *args):  # silenzioso
+                pass
+
+        llama = ThreadingHTTPServer(("127.0.0.1", 0), FakeLlama)
+        t = _th.Thread(target=llama.serve_forever, daemon=True)
+        t.start()
+        try:
+            service._SKILL = self._llama_skill(
+                f"http://127.0.0.1:{llama.server_address[1]}")
+            status, body = self._post("/scaffold", {"notes": NOTES})
+        finally:
+            llama.shutdown(); llama.server_close(); t.join(timeout=2)
+        self.assertEqual(status, 200)
+        self.assertIn("trace", body)
+        self.assertEqual(body["trace"]["request"], seen[-1])  # il filo, identico
+        self.assertIn("choices", body["trace"]["response"])
+        self.assertIn("response_format", body["trace"]["request"])
+
+    def test_scaffold_no_trace_without_model_call(self) -> None:
+        # mock backend e percorso onboarding: niente chiamata, niente trace
+        status, body = self._post("/scaffold", {"notes": NOTES})
+        self.assertEqual(status, 200)
+        self.assertNotIn("trace", body)
+        status, body = self._post("/scaffold", {"notes": "ciao?"})
+        self.assertEqual(status, 200)
+        self.assertNotIn("trace", body)  # onboarding: risposta senza modello
+
     def test_health(self) -> None:
         with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/health", timeout=5) as r:
             self.assertEqual(r.status, 200)

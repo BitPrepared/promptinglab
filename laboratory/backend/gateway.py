@@ -22,10 +22,17 @@ Route (solo /api/* — tutto il resto è 404 JSON):
   GET  /api/sessions           -> elenco sessioni; ?window=<sec>|all (clamp
                                   [60,86400], default LAB_ACTIVE_WINDOW) e
                                   ?ip=<addr> filtro sull'insieme degli IP visti
-  GET  /api/sessions/<cid>     -> timeline interazioni di un utente (metadati
-                                  + contenuti in/out completi)
-  POST /api/scaffold           -> proxy a skill /scaffold
-  POST /api/chat               -> bridge a llama /v1/chat/completions (body normalizzato)
+  GET  /api/sessions/<cid>     -> timeline interazioni di un utente (metadati,
+                                  contenuti in/out, flag has_trace — la wire
+                                  JSON NON viaggia nel poll: design D4)
+  GET  /api/sessions/<cid>/<ts> -> dettaglio di una interazione: riga completa
+                                  con la trace {request, response} verso il
+                                  modello (change trace-llm)
+  POST /api/scaffold           -> proxy a skill /scaffold (pass-through del
+                                  campo opzionale `trace` della skill)
+  POST /api/chat               -> bridge a llama /v1/chat/completions (body
+                                  normalizzato; risposta con `trace`: request
+                                  inoltrata e response grezza, sempre — D3)
 
 Config via env:
   SKILL_URL, LLAMA_URL, GATEWAY_PORT
@@ -134,6 +141,13 @@ _ROW_COLS = ("ts", "client", "ip", "kind", "step", "status",
 _ROW_SQL = ",".join(f'"{c}"' for c in _ROW_COLS)
 
 
+def _json_opt(trace: dict | None, key: str) -> str | None:
+    """Valore di trace[key] serializzato per la colonna req/resp (NULL se manca)."""
+    if not trace or trace.get(key) is None:
+        return None
+    return json.dumps(trace[key], ensure_ascii=False)
+
+
 class SessionTracker:
     """Tracker sessioni in-memory (thread-safe) + persistenza sqlite3 (design
     D7/D8 del change admin-osservabilita): write-through a ogni interazione e
@@ -157,11 +171,15 @@ class SessionTracker:
                     "CREATE TABLE IF NOT EXISTS interactions ("
                     "ts REAL, client TEXT, ip TEXT, kind TEXT, step TEXT, "
                     "status INTEGER, in_len INTEGER, out_len INTEGER, ms INTEGER, "
-                    '"in" TEXT, "out" TEXT, turns INTEGER)')
-                try:  # DB creato prima del campo turns (post-review del change)
-                    self._db.execute("ALTER TABLE interactions ADD COLUMN turns INTEGER")
-                except sqlite3.OperationalError:
-                    pass  # colonna già presente
+                    '"in" TEXT, "out" TEXT, turns INTEGER, req TEXT, resp TEXT)')
+                for col_ddl in (  # DB creato prima del change trace-llm
+                        "ALTER TABLE interactions ADD COLUMN turns INTEGER",
+                        "ALTER TABLE interactions ADD COLUMN req TEXT",
+                        "ALTER TABLE interactions ADD COLUMN resp TEXT"):
+                    try:
+                        self._db.execute(col_ddl)
+                    except sqlite3.OperationalError:
+                        pass  # colonna già presente
                 self._db.commit()
                 self._load()
             except (sqlite3.Error, OSError):
@@ -172,8 +190,13 @@ class SessionTracker:
         e timeline leggendo l'archivio in ordine cronologico."""
         if not self._db:
             return
-        for r in self._db.execute(f"SELECT {_ROW_SQL} FROM interactions ORDER BY ts"):
-            row = dict(zip(_ROW_COLS, r))
+        for r in self._db.execute(
+                f"SELECT {_ROW_SQL}, req, resp FROM interactions ORDER BY ts"):
+            row = dict(zip(_ROW_COLS + ("req", "resp"), r))
+            req, resp = row.pop("req"), row.pop("resp")
+            if req is not None or resp is not None:
+                row["trace"] = {"request": json.loads(req) if req else None,
+                                "response": json.loads(resp) if resp else None}
             s = self._sessions.setdefault(
                 row["client"], {"last_seen": row["ts"], "count": 0,
                                 "steps": set(), "ips": set(), "recent": []})
@@ -189,7 +212,8 @@ class SessionTracker:
     def record(self, cid: str, kind: str | None, step: str | None, status: int,
                in_len: int, out_len: int, ms: float,
                in_text: str | None = None, out_text: str | None = None,
-               ip: str | None = None, turns: int | None = None) -> None:
+               ip: str | None = None, turns: int | None = None,
+               trace: dict | None = None) -> None:
         ts = time.time()
         with self._lock:
             s = self._sessions.setdefault(
@@ -211,14 +235,19 @@ class SessionTracker:
                 row["out"] = out_text
             if turns is not None:
                 row["turns"] = turns  # chat: messaggi trasportati (memoria)
+            # wire JSON verso il modello (change trace-llm): la timeline la
+            # stripping (has_trace), il dettaglio la serve intera (design D4)
+            if trace is not None:
+                row["trace"] = trace
             s["recent"].append(row)  # niente cap: lo storico non si tronca
             # write-through dentro il lock (D7): memoria e DB coerenti
             if self._db:
                 try:
                     self._db.execute(
-                        f"INSERT INTO interactions ({_ROW_SQL}) "
-                        f"VALUES ({','.join('?' * len(_ROW_COLS))})",
-                        tuple(row.get(c) for c in _ROW_COLS))
+                        f"INSERT INTO interactions ({_ROW_SQL}, req, resp) "
+                        f"VALUES ({','.join('?' * len(_ROW_COLS))},?,?)",
+                        tuple(row.get(c) for c in _ROW_COLS)
+                        + (_json_opt(trace, "request"), _json_opt(trace, "response")))
                     self._db.commit()
                 except sqlite3.Error:
                     pass
@@ -241,8 +270,22 @@ class SessionTracker:
             s = self._sessions.get(cid)
             if not s:
                 return {"client": cid, "interactions": [], "last_seen": None}
-            return {"client": cid, "interactions": list(s["recent"]),
-                    "last_seen": s["last_seen"]}
+            # la trace NON viaggia nel poll della timeline (design D4): peso
+            # pieno solo su endpoint di dettaglio, flag leggero per il bottone
+            rows = [{**{k: v for k, v in row.items() if k != "trace"},
+                     "has_trace": "trace" in row} for row in s["recent"]]
+            return {"client": cid, "interactions": rows, "last_seen": s["last_seen"]}
+
+    def detail(self, cid: str, ts: float) -> dict | None:
+        """Riga interazione completa (trace inclusa) per timestamp; None se assente."""
+        with self._lock:
+            s = self._sessions.get(cid)
+            if not s:
+                return None
+            for row in s["recent"]:
+                if abs(row["ts"] - ts) < 1e-6:
+                    return dict(row)
+        return None
 
 
 _TRACKER = SessionTracker(os.path.join(LAB_SESSIONS_DIR, "sessions.db"))
@@ -294,7 +337,8 @@ class Handler(BaseHTTPRequestHandler):
                             code, self._meta.get("in_len", 0), self._meta.get("out_len", 0),
                             ms, in_text=self._meta.get("in_text"),
                             out_text=self._meta.get("out_text"), ip=self._ip,
-                            turns=self._meta.get("turns"))
+                            turns=self._meta.get("turns"),
+                            trace=self._meta.get("trace"))
 
     def _send_json(self, code: int, obj: dict) -> None:
         self._send(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"),
@@ -335,6 +379,15 @@ class Handler(BaseHTTPRequestHandler):
         if is_scaffold and self._meta:
             self._meta["out_len"] = len(data)
             self._meta["out_text"] = data.decode("utf-8", "replace")
+            # trace della chiamata LLM interna alla skill (campo opzionale,
+            # pattern events): il gateway la raccoglie per la persistenza,
+            # il pass-through verso la pagina è già trasparente
+            try:
+                tr = json.loads(data.decode("utf-8", "replace")).get("trace")
+            except (json.JSONDecodeError, AttributeError):
+                tr = None
+            if isinstance(tr, dict):
+                self._meta["trace"] = tr
         self._send(200, data, ctype)
 
     # --- bridge chat verso llama-server (tappe 1/2/4) ---------------------
@@ -374,11 +427,19 @@ class Handler(BaseHTTPRequestHandler):
             with urllib.request.urlopen(req, timeout=_PROXY_TIMEOUT) as r:
                 payload = json.loads(r.read().decode("utf-8"))
         except urllib.error.HTTPError as e:  # HTTPError è sotto URLError
+            # D7: il body d'errore ricevuto È la response della chiamata
+            err_body = e.read().decode("utf-8", "replace")
+            if self._meta:
+                self._meta["trace"] = {"request": body, "response": err_body}
             self._send_json(502, {"error": f"errore modello: {e.code} {e.reason}",
-                                  "model_active": False})
+                                  "model_active": False,
+                                  "trace": {"request": body, "response": err_body}})
             return
         except urllib.error.URLError:
-            self._send_json(503, {"error": "modello non attivo", "model_active": False})
+            if self._meta:
+                self._meta["trace"] = {"request": body}  # partita, senza risposta
+            self._send_json(503, {"error": "modello non attivo", "model_active": False,
+                                  "trace": {"request": body}})
             return
         except (json.JSONDecodeError, UnicodeDecodeError):
             self._send_json(502, {"error": "risposta modello imprevista", "model_active": False})
@@ -406,6 +467,11 @@ class Handler(BaseHTTPRequestHandler):
             out["usage"] = usage
         if isinstance(finish, str) and finish:
             out["finish_reason"] = finish
+        # trace della chiamata (change trace-llm, D1/D3): il body normalizzato
+        # inoltrato e il payload grezzo — sempre, nessun flag
+        out["trace"] = {"request": body, "response": payload}
+        if self._meta:
+            self._meta["trace"] = out["trace"]
         self._send_json(200, out)
 
     # --- model-status -----------------------------------------------------
@@ -450,8 +516,22 @@ class Handler(BaseHTTPRequestHandler):
             self._sessions_list(query)
             return
         if path.startswith("/api/sessions/"):
-            cid = path[len("/api/sessions/"):]
-            self._session_timeline(cid)
+            rest = path[len("/api/sessions/"):]
+            if "/" in rest:
+                # dettaglio di una interazione: riga completa con la trace (D4)
+                cid, _, ts_s = rest.partition("/")
+                try:
+                    ts = float(ts_s)
+                except ValueError:
+                    self._send_json(404, {"error": "not found"})
+                    return
+                row = _TRACKER.detail(cid, ts)
+                if row is None:
+                    self._send_json(404, {"error": "not found"})
+                else:
+                    self._send_json(200, row)
+                return
+            self._session_timeline(rest)
             return
         self._send_json(404, {"error": "not found"})
 

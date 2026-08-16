@@ -41,6 +41,10 @@ class LlamaServerModel(ModelBackend):
         self.timeout = timeout
         self.repeat_penalty = (self.DEFAULT_REPEAT_PENALTY
                                if repeat_penalty is None else repeat_penalty)
+        # trace dell'ultima chiamata andata a buon fine (change trace-llm):
+        # {"request": body inoltrato, "response": payload grezzo} — il filo,
+        # senza ricostruzioni. None finché non c'è una chiamata riuscita.
+        self.last_trace = None
 
     def generate(self, system, user, grammar=None, max_tokens=512, temperature=0.2) -> str:
         # Endpoint /v1/chat/completions (compatibile OpenAI) di llama-server;
@@ -80,6 +84,9 @@ class LlamaServerModel(ModelBackend):
         # Usage della chiamata (token del workflow ④): None se il server non
         # la manda — sovrascritta a ogni generate, niente staleness.
         self.last_usage = payload.get("usage") or None
+        # Trace della chiamata (sibling di last_usage): il body esattamente
+        # inoltrato e il payload esattamente ricevuto (change trace-llm, D1).
+        self.last_trace = {"request": body, "response": payload}
 
         # Estrae il testo della prima scelta.
         try:

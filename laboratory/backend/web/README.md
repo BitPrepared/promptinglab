@@ -175,8 +175,9 @@ Per seguire cosa fanno i ragazzi collegati (e una persona in particolare):
   visibile e filtrabile, timeline con interazioni espanse al click (contenuti
   completi). Auto-refresh 3s.
 - **API**: `GET /api/sessions` (`?window=<sec>|all`, `?ip=<addr>`),
-  `GET /api/sessions/<cid>` (timeline con contenuti), `GET /api/model-status`
-  (`{model_active, model?, clients}`).
+  `GET /api/sessions/<cid>` (timeline con contenuti e flag `has_trace`),
+  `GET /api/sessions/<cid>/<ts>` (dettaglio con la trace LLM),
+  `GET /api/model-status` (`{model_active, model?, clients}`).
 - **Storage sessioni** (supervisione a posteriori): ogni interazione → riga nel
   DB **sqlite3** `sessions/sessions.db` (volume bind `./sessions`), con metadati,
   IP e testi in/out completi. Lo storico sopravvive a riavvii e rebuild (il
@@ -205,6 +206,14 @@ curl -s localhost:8090/api/sessions     # elenco con finestra/filtro
 - [`../../nginx.conf`](../../nginx.conf) — **tier 1**: statici + reverse proxy
   `/api/*` → gateway (same-origin, no CORS).
 - `client.py` — client condiviso pagina/CLI (POST → `SkillOutput` JSON).
+- **Trace LLM (change trace-llm)**: ogni dialogo porta un pulsante `{ }` che
+  apre il popup con la wire JSON esatta verso l'endpoint del modello —
+  request normalizzata e response grezza per le chat, chiamata interna della
+  skill (vincolo di schema incluso) per lo scaffold. In pagina arriva sempre
+  con la risposta; nel pannello educatore è persistita (`req`/`resp` su
+  sqlite) e servita dal dettaglio al click. Senza chiamata al modello
+  (onboarding, demo) il pulsante non compare.
+
 - `static/index.html` — **la pagina wizard**: Intro + 4 tappe, ognuna con la sua
   toolbox di dialogo (chat per 1/2/4, skill per la 3), banner arricchito (modello
   + n. utenti), gestione errori (offline/timeout/retry), anteprima HTML sandbox
