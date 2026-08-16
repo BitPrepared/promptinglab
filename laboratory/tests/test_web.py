@@ -283,6 +283,24 @@ class ChatBridgeTest(unittest.TestCase):
 
     # --- /api/chat happy + normalizzazione --------------------------------
 
+    def test_chat_step5_token_cap(self) -> None:
+        """Change temperatura-tappa5 (D4): il tetto token è policy di tappa,
+        decisa dal gateway via X-Step — la tappa ⑤ genera codice, le altre no."""
+        _, body = self._post("/api/chat", {"messages": [{"role": "user", "content": "card"}]},
+                             {"X-Step": "5"})
+        self.assertEqual(body["trace"]["request"]["max_tokens"], 768)
+        # altre tappe e assenza di header: default basso invariato
+        _, b1 = self._post("/api/chat", {"messages": [{"role": "user", "content": "x"}]},
+                           {"X-Step": "1"})
+        self.assertEqual(b1["trace"]["request"]["max_tokens"], 256)
+        _, b2 = self._post("/api/chat", {"messages": [{"role": "user", "content": "x"}]})
+        self.assertEqual(b2["trace"]["request"]["max_tokens"], 256)
+        # preferenza esplicita del client: rispettata e clampata come prima
+        _, b3 = self._post("/api/chat",
+                           {"messages": [{"role": "user", "content": "x"}], "max_tokens": 100},
+                           {"X-Step": "5"})
+        self.assertEqual(b3["trace"]["request"]["max_tokens"], 100)
+
     def test_chat_response_includes_trace(self) -> None:
         """Change trace-llm (D1/D3): la risposta porta sempre la trace — il body
         normalizzato inoltrato e il payload grezzo, identici al filo."""
@@ -1252,6 +1270,16 @@ class SkillWorkflowPageTest(unittest.TestCase):
         self.assertIn("typeof opts.temperature", body)
         # wiring: la tappa ⑤ invia il valore corrente dello slider
         self.assertIn("temp5Value", body)
+
+    def test_step5_declares_high_token_cap(self) -> None:
+        # il tetto lo decide il gateway per tappa (X-Step); la pagina lo
+        # dichiara soltanto — e il test incrocia pagina e gateway, come già
+        # fa test_displayed_limits_match_gateway_defaults per il default basso
+        body = self._read()
+        with open(os.path.join(_REPO, "backend/gateway.py"), encoding="utf-8") as f:
+            gw = f.read()
+        self.assertIn('_CHAT_STEP_MAX_TOKENS = {"5": 768}', gw)
+        self.assertIn("maxOut: 768", body)
 
     def test_every_js_id_exists_in_markup(self) -> None:
         """Regressione: rinominare un id nel markup (tb4 -> tb5) senza aggiornare

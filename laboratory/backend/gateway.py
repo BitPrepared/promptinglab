@@ -72,6 +72,10 @@ _CHAT_MAX_TURNS = 32
 _CHAT_DEFAULT_TEMP = 0.7
 _CHAT_DEFAULT_MAX_TOKENS = 256
 _CHAT_MAX_TOKENS_CEILING = 768
+# Tetto token per tappa (policy del gateway, change temperatura-tappa5): la ⑤
+# genera codice HTML/CSS e il default basso la taglia a metà tag — la skill ha
+# già misurato che servono 768 (nemmeno 512 bastavano al suo JSON pretty-print).
+_CHAT_STEP_MAX_TOKENS = {"5": 768}
 _ROLE_OK = ("system", "user", "assistant")
 
 _MODEL_CACHE: dict = {"name": None, "ts": 0.0}
@@ -81,8 +85,10 @@ def _clamp(v, lo, hi):
     return lo if v < lo else hi if v > hi else v
 
 
-def _normalize_chat_body(client: dict) -> tuple[dict | None, str | None]:
-    """Ricostruisce il body per llama: strip chiavi extra, clamp numeri, costanti fisse."""
+def _normalize_chat_body(client: dict, step: str | None = None) -> tuple[dict | None, str | None]:
+    """Ricostruisce il body per llama: strip chiavi extra, clamp numeri, costanti fisse.
+    Il default del tetto token dipende dalla tappa (header X-Step): policy
+    didattica = normalizzazione, quindi sta qui nel gateway, non nel client."""
     msgs = client.get("messages") if isinstance(client, dict) else None
     if not isinstance(msgs, list) or not msgs or len(msgs) > _CHAT_MAX_TURNS:
         return None, "messages non validi"
@@ -97,10 +103,11 @@ def _normalize_chat_body(client: dict) -> tuple[dict | None, str | None]:
     except (TypeError, ValueError):
         temp = _CHAT_DEFAULT_TEMP
     temp = _clamp(temp, 0.0, 1.5)
+    default_mt = _CHAT_STEP_MAX_TOKENS.get(str(step), _CHAT_DEFAULT_MAX_TOKENS)
     try:
-        mt = int(client.get("max_tokens", _CHAT_DEFAULT_MAX_TOKENS))
+        mt = int(client.get("max_tokens", default_mt))
     except (TypeError, ValueError):
-        mt = _CHAT_DEFAULT_MAX_TOKENS
+        mt = default_mt
     mt = _clamp(mt, 16, _CHAT_MAX_TOKENS_CEILING)
     return {"messages": out_msgs, "temperature": temp, "max_tokens": mt,
             "repeat_penalty": _CHAT_REPEAT_PENALTY, "stream": False}, None
@@ -402,7 +409,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "body JSON non valido"})
             return
 
-        body, err = _normalize_chat_body(client)
+        body, err = _normalize_chat_body(client, step=self._step)
         if err:
             self._meta = {"kind": "chat", "step": self._step, "in_len": len(raw), "out_len": 0}
             self._send_json(400, {"error": err, "model_active": False})

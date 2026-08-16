@@ -773,6 +773,7 @@ makeChat(document.getElementById("tb5"), {
   step: 5, meter: true,
   seed: function () { return SEED; },
   temperature: temp5Value,
+  maxOut: 768,   // dichiarato dal gateway per tappa (X-Step): qui si mostra
   onReply: maybeRenderPreview
 });
 

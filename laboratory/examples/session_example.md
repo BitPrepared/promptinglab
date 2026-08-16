@@ -1,4 +1,4 @@
-# Sessione di esempio — Skill Diario di Bordo
+# Sessione di esempio — Workflow Diario di Bordo
 
 Esempio completo di sessione (output generato dal **backend mock**, deterministico
 e offline; con il modello reale la qualità dell'estrazione migliora, ma il
@@ -26,7 +26,7 @@ zavorra e ha funzionato. Stanchi ma molto felici.
 
 Lo scaffold copre le **8 aree** del contratto (`people`, `places`, `events`,
 `observations`, `emotions`, `problems`, `solutions`, `reflections`); le aree
-senza fatti nell'input restano a `non specificato` — la skill non inventa.
+senza fatti nell'input restano a `non specificato` — llm non inventa (o meglio non dovrebbe).
 
 ```
 ## Campo base a Costigiola.
