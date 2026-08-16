@@ -37,9 +37,8 @@ services:
       SKILL_URL: http://skill:8080
       LLAMA_URL: http://llama:8081
       GATEWAY_PORT: "8090"
-      # Osservabilità: sessioni (JSONL) persistite nel volume; verbose OFF (privacy).
+      # Osservabilità: sessioni (sqlite3, sessions.db) persistite nel volume.
       LAB_SESSIONS_DIR: /app/sessions
-      LAB_LOG_VERBOSE: ${LAB_LOG_VERBOSE:-0}
     volumes:
       - ./sessions:/app/sessions   # persistenza sessioni tra riavvii (debug a posteriori)
     command: ["python3", "-m", "backend.gateway"]

@@ -9,22 +9,28 @@ statico (quello è compito di nginx, che fa anche da reverse proxy same-origin):
     1/2/4 (`/api/chat`) — la pagina passa sempre di qui: normalizzazione dei
     parametri e osservabilità vivono nel gateway, non nel client
   - **osservabilità**: log strutturato di ogni richiesta, tracker sessioni
-    in-memory (thread-safe), persistenza su JSONL, rotte `/api/sessions(<id>)`.
-    Solo metadati (mai il testo degli appunti/chat dei ragazzi) a meno di
-    LAB_LOG_VERBOSE=1.
+    in-memory (thread-safe), persistenza su **sqlite3** (write-through +
+    load-all all'avvio: lo storico sopravvive a riavvii e rebuild; il DB vive
+    nel volume ./sessions), rotte `/api/sessions(<id>)`. Metadati (chi, quando,
+    tappa, esito, durata, IP) e contenuto completo delle interazioni (design D3
+    del change admin-osservabilita: a delta — ultimo messaggio utente e
+    risposta, non la cronologia ri-inviata). Azzeramento: `make clean-sessions`.
 
 Route (solo /api/* — tutto il resto è 404 JSON):
   GET  /api/health             -> proxy a skill /health
   GET  /api/model-status       -> {model_active, model?, clients} (sempre 200)
-  GET  /api/sessions           -> utenti "connessi" + contatori (solo metadati)
-  GET  /api/sessions/<cid>     -> timeline interazioni di un utente (solo metadati)
+  GET  /api/sessions           -> elenco sessioni; ?window=<sec>|all (clamp
+                                  [60,86400], default LAB_ACTIVE_WINDOW) e
+                                  ?ip=<addr> filtro sull'insieme degli IP visti
+  GET  /api/sessions/<cid>     -> timeline interazioni di un utente (metadati
+                                  + contenuti in/out completi)
   POST /api/scaffold           -> proxy a skill /scaffold
   POST /api/chat               -> bridge a llama /v1/chat/completions (body normalizzato)
 
 Config via env:
   SKILL_URL, LLAMA_URL, GATEWAY_PORT
-  LAB_SESSIONS_DIR   dir del file JSONL delle sessioni (default <repo>/sessions; ""=off)
-  LAB_LOG_VERBOSE    "1" aggiunge anteprime troncate (in/out) per debug (OFF di default)
+  LAB_SESSIONS_DIR   dir del DB sqlite delle sessioni (default <repo>/sessions,
+                     file sessions.db; il vecchio sessions.jsonl è archivio legacy)
   LAB_ACTIVE_WINDOW  secondi per considerare un client "connesso" (default 300)
 
 Indipendenza dei moduli (D1): questo modulo NON importa skill/service (parla
@@ -34,19 +40,20 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import sys
 import threading
 import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 SKILL_URL = os.environ.get("SKILL_URL", "http://localhost:8080").rstrip("/")
 LLAMA_URL = os.environ.get("LLAMA_URL", "http://localhost:8081").rstrip("/")
 GATEWAY_PORT = int(os.environ.get("GATEWAY_PORT", "8090"))
 LAB_SESSIONS_DIR = os.environ.get("LAB_SESSIONS_DIR") or os.path.join(_HERE, "..", "sessions")
-LAB_LOG_VERBOSE = os.environ.get("LAB_LOG_VERBOSE", "0") == "1"
 LAB_ACTIVE_WINDOW = int(os.environ.get("LAB_ACTIVE_WINDOW", "300"))
 
 _PROXY_TIMEOUT = 120  # s: il modello reale può impiegare qualche secondo
@@ -122,48 +129,110 @@ def _llama_model_name() -> str | None:
     return name
 
 
-class SessionTracker:
-    """Tracker sessioni in-memory (thread-safe) + persistenza JSONL. Solo metadati."""
+_ROW_COLS = ("ts", "client", "ip", "kind", "step", "status",
+             "in_len", "out_len", "ms", "in", "out", "turns")
+_ROW_SQL = ",".join(f'"{c}"' for c in _ROW_COLS)
 
-    def __init__(self, jsonl_path: str | None) -> None:
+
+class SessionTracker:
+    """Tracker sessioni in-memory (thread-safe) + persistenza sqlite3 (design
+    D7/D8 del change admin-osservabilita): write-through a ogni interazione e
+    load-all all'avvio, così lo storico sopravvive a riavvii e rebuild. Metadati,
+    IP e contenuti completi; il vecchio sessions.jsonl è archivio legacy (D9)."""
+
+    def __init__(self, db_path: str | None) -> None:
         self._lock = threading.Lock()
         self._sessions: dict[str, dict] = {}
-        self._path = jsonl_path
+        self._path = db_path
+        self._db = None
+        if db_path:
+            try:
+                d = os.path.dirname(db_path)
+                if d:
+                    os.makedirs(d, exist_ok=True)
+                # check_same_thread=False: la serializzazione la garantisce il
+                # lock del tracker; single-writer (un solo processo gateway)
+                self._db = sqlite3.connect(db_path, check_same_thread=False)
+                self._db.execute(
+                    "CREATE TABLE IF NOT EXISTS interactions ("
+                    "ts REAL, client TEXT, ip TEXT, kind TEXT, step TEXT, "
+                    "status INTEGER, in_len INTEGER, out_len INTEGER, ms INTEGER, "
+                    '"in" TEXT, "out" TEXT, turns INTEGER)')
+                try:  # DB creato prima del campo turns (post-review del change)
+                    self._db.execute("ALTER TABLE interactions ADD COLUMN turns INTEGER")
+                except sqlite3.OperationalError:
+                    pass  # colonna già presente
+                self._db.commit()
+                self._load()
+            except (sqlite3.Error, OSError):
+                self._db = None  # storage off: si vive di memoria
+
+    def _load(self) -> None:
+        """Load-all all'avvio (D8): ricostruisce sessioni, conteggi, insiemi IP
+        e timeline leggendo l'archivio in ordine cronologico."""
+        if not self._db:
+            return
+        for r in self._db.execute(f"SELECT {_ROW_SQL} FROM interactions ORDER BY ts"):
+            row = dict(zip(_ROW_COLS, r))
+            s = self._sessions.setdefault(
+                row["client"], {"last_seen": row["ts"], "count": 0,
+                                "steps": set(), "ips": set(), "recent": []})
+            s["last_seen"] = row["ts"]
+            s["count"] += 1
+            if row["step"]:
+                s["steps"].add(str(row["step"]))
+            if row["ip"]:
+                s["ips"].add(row["ip"])
+                s["last_ip"] = row["ip"]
+            s["recent"].append(row)
 
     def record(self, cid: str, kind: str | None, step: str | None, status: int,
-               in_len: int, out_len: int, ms: float, previews: dict | None) -> None:
+               in_len: int, out_len: int, ms: float,
+               in_text: str | None = None, out_text: str | None = None,
+               ip: str | None = None, turns: int | None = None) -> None:
         ts = time.time()
         with self._lock:
             s = self._sessions.setdefault(
-                cid, {"last_seen": ts, "count": 0, "steps": set(), "recent": []})
+                cid, {"last_seen": ts, "count": 0, "steps": set(),
+                      "ips": set(), "recent": []})
             s["last_seen"] = ts
             s["count"] += 1
             if step:
                 s["steps"].add(str(step))
-            row = {"ts": ts, "client": cid, "kind": kind, "step": step,
+            if ip:
+                s["ips"].add(ip)
+                s["last_ip"] = ip
+            row = {"ts": ts, "client": cid, "ip": ip, "kind": kind, "step": step,
                    "status": status, "in_len": in_len, "out_len": out_len, "ms": int(ms)}
-            if previews:
-                row.update(previews)
-            s["recent"].append(row)
-            if len(s["recent"]) > 200:
-                s["recent"] = s["recent"][-200:]
-        if self._path:
-            self._append(row)
+            # contenuti completi, sempre (design D3: a delta, non a storia)
+            if in_text is not None:
+                row["in"] = in_text
+            if out_text is not None:
+                row["out"] = out_text
+            if turns is not None:
+                row["turns"] = turns  # chat: messaggi trasportati (memoria)
+            s["recent"].append(row)  # niente cap: lo storico non si tronca
+            # write-through dentro il lock (D7): memoria e DB coerenti
+            if self._db:
+                try:
+                    self._db.execute(
+                        f"INSERT INTO interactions ({_ROW_SQL}) "
+                        f"VALUES ({','.join('?' * len(_ROW_COLS))})",
+                        tuple(row.get(c) for c in _ROW_COLS))
+                    self._db.commit()
+                except sqlite3.Error:
+                    pass
 
-    def _append(self, row: dict) -> None:
-        try:
-            os.makedirs(os.path.dirname(self._path), exist_ok=True)
-            with open(self._path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(row, ensure_ascii=False) + "\n")
-        except OSError:
-            pass
-
-    def active_list(self, window: int) -> dict:
-        cutoff = time.time() - window
+    def active_list(self, window: int | None, ip: str | None = None) -> dict:
+        """Elenco sessioni: `window` in secondi (None = tutto lo storico del
+        processo), `ip` filtra sulle sessioni viste da quell'IP (insieme, non
+        solo l'ultimo)."""
+        cutoff = (time.time() - window) if window is not None else 0.0
         with self._lock:
             out = [{"client": cid, "last_seen": s["last_seen"], "count": s["count"],
-                    "steps": sorted(s["steps"])}
-                   for cid, s in self._sessions.items() if s["last_seen"] >= cutoff]
+                    "steps": sorted(s["steps"]), "last_ip": s.get("last_ip")}
+                   for cid, s in self._sessions.items()
+                   if s["last_seen"] >= cutoff and (ip is None or ip in s["ips"])]
         out.sort(key=lambda x: x["last_seen"], reverse=True)
         return {"active": out, "total": len(out)}
 
@@ -176,7 +245,7 @@ class SessionTracker:
                     "last_seen": s["last_seen"]}
 
 
-_TRACKER = SessionTracker(os.path.join(LAB_SESSIONS_DIR, "sessions.jsonl"))
+_TRACKER = SessionTracker(os.path.join(LAB_SESSIONS_DIR, "sessions.db"))
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -187,6 +256,9 @@ class Handler(BaseHTTPRequestHandler):
         self._t0 = time.perf_counter()
         self._cid = (self.headers.get("X-Client-Id") or "anon")[:40]
         self._step = self.headers.get("X-Step")
+        # IP del client: X-Real-IP quando arriva via nginx, altrimenti il peer
+        # (accesso diretto in LAN da consumer fidati: CLI, debug)
+        self._ip = self.headers.get("X-Real-IP") or self.client_address[0]
         self._meta: dict | None = None
 
     def _access(self, code: int, ms: float) -> None:
@@ -218,10 +290,11 @@ class Handler(BaseHTTPRequestHandler):
             ms = 0.0
         self._access(code, ms)
         if self._meta and self._meta.get("kind"):
-            previews = self._meta.get("previews") if LAB_LOG_VERBOSE else None
             _TRACKER.record(self._cid, self._meta.get("kind"), self._meta.get("step"),
                             code, self._meta.get("in_len", 0), self._meta.get("out_len", 0),
-                            ms, previews)
+                            ms, in_text=self._meta.get("in_text"),
+                            out_text=self._meta.get("out_text"), ip=self._ip,
+                            turns=self._meta.get("turns"))
 
     def _send_json(self, code: int, obj: dict) -> None:
         self._send(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"),
@@ -237,10 +310,13 @@ class Handler(BaseHTTPRequestHandler):
         in_len = len(body or b"")
         if is_scaffold:
             # step dall'header della pagina (X-Step); default = tappa ④ Workflow
+            try:
+                notes = json.loads((body or b"{}").decode("utf-8")).get("notes")
+            except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
+                notes = None
             self._meta = {"kind": "scaffold", "step": self.headers.get("X-Step") or "4",
-                          "in_len": in_len, "out_len": 0}
-            if LAB_LOG_VERBOSE:
-                self._meta["previews"] = {"in_preview": (body or b"").decode("utf-8", "replace")[:60]}
+                          "in_len": in_len, "out_len": 0,
+                          "in_text": notes if isinstance(notes, str) else None}
         req = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:
             with urllib.request.urlopen(req, timeout=_PROXY_TIMEOUT) as r:
@@ -250,6 +326,7 @@ class Handler(BaseHTTPRequestHandler):
             d = e.read()
             if is_scaffold and self._meta:
                 self._meta["out_len"] = len(d)
+                self._meta["out_text"] = d.decode("utf-8", "replace")
             self._send(e.code, d, "application/json; charset=utf-8")
             return
         except urllib.error.URLError as e:
@@ -257,8 +334,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if is_scaffold and self._meta:
             self._meta["out_len"] = len(data)
-            if LAB_LOG_VERBOSE:
-                self._meta.setdefault("previews", {})["out_preview"] = data.decode("utf-8", "replace")[:60]
+            self._meta["out_text"] = data.decode("utf-8", "replace")
         self._send(200, data, ctype)
 
     # --- bridge chat verso llama-server (tappe 1/2/4) ---------------------
@@ -279,15 +355,16 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": err, "model_active": False})
             return
 
-        self._meta = {"kind": "chat", "step": self._step, "in_len": len(raw), "out_len": 0}
-        if LAB_LOG_VERBOSE:
-            try:
-                msgs = client.get("messages") or []
-                last_user = next((m["content"] for m in reversed(msgs)
-                                  if isinstance(m, dict) and m.get("role") == "user"), "")
-                self._meta["previews"] = {"in_preview": str(last_user)[:60]}
-            except Exception:  # noqa: BLE001
-                pass
+        # contenuto in ingresso a delta: l'ultimo messaggio utente, non tutta
+        # la cronologia che il client re-invia a ogni turno (design D3)
+        try:
+            msgs = client.get("messages") or []
+            last_user = next((m["content"] for m in reversed(msgs)
+                              if isinstance(m, dict) and m.get("role") == "user"), "")
+        except Exception:  # noqa: BLE001
+            last_user = ""
+        self._meta = {"kind": "chat", "step": self._step, "in_len": len(raw), "out_len": 0,
+                      "in_text": last_user or None, "turns": len(body["messages"])}
 
         data = json.dumps(body).encode("utf-8")
         req = urllib.request.Request(
@@ -323,8 +400,7 @@ class Handler(BaseHTTPRequestHandler):
             finish = None
         if self._meta:
             self._meta["out_len"] = len(reply)
-            if LAB_LOG_VERBOSE:
-                self._meta.setdefault("previews", {})["out_preview"] = reply[:60]
+            self._meta["out_text"] = reply
         out = {"reply": reply}
         if usage:
             out["usage"] = usage
@@ -341,8 +417,21 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(200, {"model_active": active, "model": model, "clients": clients})
 
     # --- osservabilità ----------------------------------------------------
-    def _sessions_list(self) -> None:
-        self._send_json(200, _TRACKER.active_list(LAB_ACTIVE_WINDOW))
+    def _sessions_list(self, query: str) -> None:
+        """GET /api/sessions?window=<sec>|all&ip=<addr> — la finestra è una
+        scelta di vista del pannello (design D1): clamp lato server, default
+        LAB_ACTIVE_WINDOW; il filtro IP matcha l'insieme degli IP della sessione."""
+        q = parse_qs(query)
+        window: int | None = LAB_ACTIVE_WINDOW
+        if q.get("window", [""])[0] == "all":
+            window = None
+        elif "window" in q:
+            try:
+                window = _clamp(int(q["window"][0]), 60, 86400)
+            except ValueError:
+                window = LAB_ACTIVE_WINDOW
+        ip = q.get("ip", [None])[0]
+        self._send_json(200, _TRACKER.active_list(window, ip=ip))
 
     def _session_timeline(self, cid: str) -> None:
         self._send_json(200, _TRACKER.timeline(cid))
@@ -350,7 +439,7 @@ class Handler(BaseHTTPRequestHandler):
     # --- routing (SOLO /api/*: il resto è del tier statico, qui 404) ------
     def do_GET(self) -> None:  # noqa: N802 - signature stdlib
         self._begin()
-        path = self.path.split("?", 1)[0]
+        path, _, query = self.path.partition("?")
         if path == "/api/health":
             self._proxy("GET", "/health")
             return
@@ -358,7 +447,7 @@ class Handler(BaseHTTPRequestHandler):
             self._model_status()
             return
         if path == "/api/sessions":
-            self._sessions_list()
+            self._sessions_list(query)
             return
         if path.startswith("/api/sessions/"):
             cid = path[len("/api/sessions/"):]
@@ -385,7 +474,7 @@ def main() -> None:
     print(
         f"laboratorio-gateway in ascolto su :{GATEWAY_PORT} "
         f"(skill={SKILL_URL}, llama={LLAMA_URL}, "
-        f"sessions={_TRACKER._path}, verbose={LAB_LOG_VERBOSE})",
+        f"sessions={_TRACKER._path})",
         flush=True,
     )
     server = ThreadingHTTPServer(("0.0.0.0", GATEWAY_PORT), Handler)

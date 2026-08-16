@@ -31,6 +31,17 @@ from backend.web import client
 
 NOTES = "Campo base a Costigiola. Oggi con Marco e Lucia montiamo la tenda nord. Pioveva, poi con le pietre ha funzionato. Stanchi ma felici."
 
+
+def _wait_tracked(cid: str, timeout: float = 2.0) -> None:
+    """Il record avviene nel thread handler DOPO la risposta: attendo che la
+    sessione compaia nel tracker globale in memoria (race dei test)."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        with gateway._TRACKER._lock:
+            if cid in gateway._TRACKER._sessions:
+                return
+        time.sleep(0.01)
+
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -251,11 +262,11 @@ class ChatBridgeTest(unittest.TestCase):
         self.gw.shutdown(); self.gw.server_close(); self.gw_thread.join(timeout=2)
         self.llama.shutdown(); self.llama.server_close(); self.llama_thread.join(timeout=2)
 
-    def _post(self, path: str, body: dict) -> tuple[int, dict]:
+    def _post(self, path: str, body: dict, headers: dict | None = None) -> tuple[int, dict]:
         data = json.dumps(body).encode("utf-8")
         req = urllib.request.Request(
             self.gw_url + path, data=data,
-            headers={"Content-Type": "application/json"}, method="POST",
+            headers={"Content-Type": "application/json", **(headers or {})}, method="POST",
         )
         try:
             with urllib.request.urlopen(req, timeout=5) as r:
@@ -271,6 +282,53 @@ class ChatBridgeTest(unittest.TestCase):
             return e.code, json.loads(e.read().decode("utf-8"))
 
     # --- /api/chat happy + normalizzazione --------------------------------
+
+    def test_chat_records_full_content(self) -> None:
+        """Design D3: si registra l'ultimo messaggio utente + la risposta,
+        non l'intera cronologia ri-inviata a ogni turno."""
+        orig = gateway._TRACKER
+        tmp = tempfile.mkdtemp()
+        gateway._TRACKER = gateway.SessionTracker(os.path.join(tmp, "s.db"))
+        try:
+            self._post("/api/chat", {"messages": [
+                {"role": "user", "content": "uno"},
+                {"role": "assistant", "content": "risposta"},
+                {"role": "user", "content": "due"},
+            ]}, {"X-Client-Id": "carlo"})
+            _wait_tracked("carlo")
+            row = gateway._TRACKER.timeline("carlo")["interactions"][0]
+        finally:
+            gateway._TRACKER = orig
+            shutil.rmtree(tmp, ignore_errors=True)
+        self.assertEqual(row["in"], "due")
+        self.assertEqual(row["out"], CANNED_REPLY)
+        self.assertNotIn("uno\n", row["in"])  # la cronologia non si duplica
+
+    def test_chat_records_turns(self) -> None:
+        """Turni trasportati dalla richiesta (change admin-osservabilita, post-
+        review): tab A senza memoria = sempre 1, tab B con memoria = crescenti.
+        È il segnale «dov'ero / questa chat aveva memoria» per l'educatore."""
+        orig = gateway._TRACKER
+        tmp = tempfile.mkdtemp()
+        gateway._TRACKER = gateway.SessionTracker(os.path.join(tmp, "s.db"))
+        try:
+            self._post("/api/chat", {"messages": [{"role": "user", "content": "ciao"}]},
+                       {"X-Client-Id": "taba"})
+            self._post("/api/chat", {"messages": [
+                {"role": "user", "content": "ciao mi chiamo Stefano"},
+                {"role": "assistant", "content": "Ciao Stefano!"},
+                {"role": "user", "content": "come mi chiamo?"},
+            ]}, {"X-Client-Id": "tabb"})
+            _wait_tracked("taba")
+            _wait_tracked("tabb")
+            a = gateway._TRACKER.timeline("taba")["interactions"][0]
+            b = gateway._TRACKER.timeline("tabb")["interactions"][0]
+        finally:
+            gateway._TRACKER = orig
+            shutil.rmtree(tmp, ignore_errors=True)
+        self.assertEqual(a["turns"], 1)   # senza memoria: parte da solo
+        self.assertEqual(b["turns"], 3)   # con memoria: la cronologia viaggia
+
     def test_chat_returns_reply(self) -> None:
         status, body = self._post("/api/chat", {
             "messages": [{"role": "system", "content": "sys"}, {"role": "user", "content": "ciao"}],
@@ -406,12 +464,12 @@ class ObservabilityTest(unittest.TestCase):
         self.skill_thread = threading.Thread(target=self.skill.serve_forever, daemon=True)
         self.skill_thread.start()
 
-        self._orig = (gateway.SKILL_URL, gateway.LLAMA_URL, gateway._TRACKER, gateway.LAB_LOG_VERBOSE)
+        self._orig = (gateway.SKILL_URL, gateway.LLAMA_URL, gateway._TRACKER)
         gateway.SKILL_URL = self.skill_url
         gateway.LLAMA_URL = "http://127.0.0.1:1"  # modello off
         self.tmp = tempfile.mkdtemp()
-        gateway._TRACKER = gateway.SessionTracker(os.path.join(self.tmp, "s.jsonl"))
-        gateway.LAB_LOG_VERBOSE = False
+        self.db = os.path.join(self.tmp, "s.db")
+        gateway._TRACKER = gateway.SessionTracker(self.db)
 
         self.gw = ThreadingHTTPServer(("127.0.0.1", 0), gateway.Handler)
         self.gw_url = f"http://127.0.0.1:{self.gw.server_address[1]}"
@@ -419,7 +477,7 @@ class ObservabilityTest(unittest.TestCase):
         self.gw_thread.start()
 
     def tearDown(self) -> None:
-        gateway.SKILL_URL, gateway.LLAMA_URL, gateway._TRACKER, gateway.LAB_LOG_VERBOSE = self._orig
+        gateway.SKILL_URL, gateway.LLAMA_URL, gateway._TRACKER = self._orig
         self.gw.shutdown(); self.gw.server_close(); self.gw_thread.join(timeout=2)
         self.skill.shutdown(); self.skill.server_close(); self.skill_thread.join(timeout=2)
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -441,18 +499,19 @@ class ObservabilityTest(unittest.TestCase):
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read().decode("utf-8"))
 
-    def _wait_jsonl(self) -> str:
-        """Il record (e il write del JSONL) avviene nel thread handler DOPO l'invio
-        della risposta: attendo brevemente che il file sia scritto (race dei test)."""
-        p = os.path.join(self.tmp, "s.jsonl")
-        for _ in range(100):
-            if os.path.exists(p):
-                return p
+    def _wait_session(self, cid: str) -> None:
+        """Il record avviene nel thread handler DOPO la risposta: attendo che la
+        sessione compaia nel tracker in memoria (memoria e DB si scrivono nello
+        stesso critical section, quindi vale anche per la persistenza)."""
+        for _ in range(200):
+            with gateway._TRACKER._lock:
+                if cid in gateway._TRACKER._sessions:
+                    return
             time.sleep(0.01)
-        return p
 
     def test_client_id_tracked(self) -> None:
         self._post("/api/scaffold", {"notes": NOTES}, {"X-Client-Id": "marco", "X-Step": "3"})
+        self._wait_session("marco")
         _, body = self._get("/api/sessions")
         self.assertEqual(body["total"], 1)
         self.assertEqual(body["active"][0]["client"], "marco")
@@ -462,6 +521,7 @@ class ObservabilityTest(unittest.TestCase):
         # senza header X-Step lo scaffold è tappa ④ (Workflow): il default non
         # è più l'hardcoded "3" del prima della rinumerazione
         self._post("/api/scaffold", {"notes": NOTES}, {"X-Client-Id": "nopro"})
+        self._wait_session("nopro")
         _, body = self._get("/api/sessions")
         self.assertEqual(body["active"][0]["client"], "nopro")
         self.assertIn("4", body["active"][0]["steps"])
@@ -469,41 +529,237 @@ class ObservabilityTest(unittest.TestCase):
     def test_two_clients(self) -> None:
         for cid in ("a", "b"):
             self._post("/api/scaffold", {"notes": NOTES}, {"X-Client-Id": cid})
+        self._wait_session("b")
         _, body = self._get("/api/sessions")
         self.assertEqual(body["total"], 2)
 
-    def test_timeline_metadata_only(self) -> None:
-        """Privacy: la timeline contiene SOLO metadati, mai il testo degli appunti."""
+    def test_timeline_includes_content(self) -> None:
+        """Contenuti completi (change admin-osservabilita): la timeline espone
+        input e output dell'interazione, non solo le lunghezze."""
         self._post("/api/scaffold", {"notes": NOTES}, {"X-Client-Id": "x"})
+        self._wait_session("x")
         _, body = self._get("/api/sessions/x")
         self.assertTrue(body["interactions"])
         it = body["interactions"][0]
-        self.assertNotIn("in_preview", it)
-        self.assertNotIn("out_preview", it)
-        # il testo degli appunti NON compare da nessuna parte nella risposta
-        self.assertNotIn(NOTES, json.dumps(body))
+        self.assertEqual(it["in"], NOTES)
+        self.assertIn("out", it)
 
-    def test_jsonl_one_row_per_request(self) -> None:
-        self._post("/api/scaffold", {"notes": NOTES}, {"X-Client-Id": "y"})
-        with open(self._wait_jsonl()) as f:
-            lines = f.read().strip().split("\n")
-        self.assertEqual(len(lines), 1)
+    def test_history_survives_tracker_restart(self) -> None:
+        """Spec 'Archivio sessioni persistente': dopo un riavvio del gateway
+        (nuovo tracker sullo stesso DB, come un make rebuild) lo storico resta
+        consultabile — finestra 'Tutto', IP e contenuti compresi."""
+        self._post("/api/scaffold", {"notes": NOTES},
+                   {"X-Client-Id": "stable", "X-Real-IP": "192.168.1.9"})
+        self._wait_session("stable")
+        gateway._TRACKER = gateway.SessionTracker(self.db)  # simula il rebuild
+        _, body = self._get("/api/sessions?window=all")
+        self.assertEqual(body["total"], 1)
+        self.assertEqual(body["active"][0]["client"], "stable")
+        self.assertEqual(body["active"][0]["last_ip"], "192.168.1.9")
+        _, tl = self._get("/api/sessions/stable")
+        self.assertEqual(tl["interactions"][0]["in"], NOTES)
 
-    def test_verbose_adds_previews(self) -> None:
-        # il record avviene nel thread handler DOPO l'invio della risposta:
-        # il flag resta True finché non abbiamo letto il JSONL (tearDown ripristina)
-        gateway.LAB_LOG_VERBOSE = True
-        self._post("/api/scaffold", {"notes": NOTES}, {"X-Client-Id": "z"})
-        with open(self._wait_jsonl()) as f:
-            row = json.loads(f.read().strip().split("\n")[0])
-        gateway.LAB_LOG_VERBOSE = False
-        self.assertIn("in_preview", row)
+    def test_window_query_filters_list(self) -> None:
+        # "old" ha ultima attività 9000s fa: fuori da qualunque finestra, dentro "all"
+        self._post("/api/scaffold", {"notes": NOTES}, {"X-Client-Id": "old"})
+        self._wait_session("old")
+        with gateway._TRACKER._lock:
+            gateway._TRACKER._sessions["old"]["last_seen"] = time.time() - 9000
+        self._post("/api/scaffold", {"notes": NOTES}, {"X-Client-Id": "new"})
+
+        _, body = self._get("/api/sessions?window=600")
+        self.assertEqual(body["total"], 1)
+        self.assertEqual(body["active"][0]["client"], "new")
+
+        _, body = self._get("/api/sessions?window=all")
+        self.assertEqual(body["total"], 2)
+
+        # valore non numerico -> finestra di default (300s): "old" resta fuori
+        _, body = self._get("/api/sessions?window=pippo")
+        self.assertEqual(body["total"], 1)
+
+    def test_ip_tracked_and_filterable(self) -> None:
+        self._post("/api/scaffold", {"notes": NOTES},
+                   {"X-Client-Id": "a", "X-Real-IP": "192.168.1.7"})
+        self._post("/api/scaffold", {"notes": NOTES},
+                   {"X-Client-Id": "b", "X-Real-IP": "192.168.1.8"})
+        self._wait_session("b")
+
+        _, body = self._get("/api/sessions")
+        ips = {a["client"]: a["last_ip"] for a in body["active"]}
+        self.assertEqual(ips, {"a": "192.168.1.7", "b": "192.168.1.8"})
+
+        _, body = self._get("/api/sessions?ip=192.168.1.7")
+        self.assertEqual(body["total"], 1)
+        self.assertEqual(body["active"][0]["client"], "a")
+
+    def test_ip_falls_back_to_peer_address(self) -> None:
+        # accesso diretto al gateway (CLI/debug): niente X-Real-IP, conta il peer
+        self._post("/api/scaffold", {"notes": NOTES}, {"X-Client-Id": "direct"})
+        self._wait_session("direct")
+        _, body = self._get("/api/sessions")
+        self.assertEqual(body["active"][0]["last_ip"], "127.0.0.1")
 
     def test_model_status_has_clients_and_model(self) -> None:
         _, body = self._get("/api/model-status")
         self.assertIn("clients", body)
         self.assertIn("model", body)
         self.assertFalse(body["model_active"])  # llama off in questo test
+
+
+class SessionTrackerTest(unittest.TestCase):
+    """Unit test del tracker (change admin-osservabilita): IP, contenuti, storico integro."""
+
+    def test_record_populates_ip(self) -> None:
+        t = gateway.SessionTracker(None)
+        t.record("c1", "chat", "1", 200, 10, 5, 12.0, ip="192.168.1.7")
+        row = t.timeline("c1")["interactions"][0]
+        self.assertEqual(row["ip"], "192.168.1.7")
+        self.assertEqual(t.active_list(300)["active"][0]["last_ip"], "192.168.1.7")
+
+    def test_ip_filter_matches_any_seen_ip(self) -> None:
+        # stessa sessione vista da due IP (localStorage portata altrove): il
+        # filtro matcha l'insieme degli IP, non solo l'ultimo
+        t = gateway.SessionTracker(None)
+        t.record("c1", "chat", "1", 200, 1, 1, 1.0, ip="10.0.0.1")
+        t.record("c1", "chat", "1", 200, 1, 1, 1.0, ip="10.0.0.2")
+        t.record("c2", "chat", "1", 200, 1, 1, 1.0, ip="10.0.0.9")
+        got = t.active_list(300, ip="10.0.0.2")
+        self.assertEqual([a["client"] for a in got["active"]], ["c1"])
+        self.assertEqual(got["total"], 1)
+
+    def test_record_stores_full_content(self) -> None:
+        t = gateway.SessionTracker(None)
+        t.record("c1", "chat", "1", 200, 7, 3, 5.0,
+                 in_text="come mi chiamo?", out_text="Stefano")
+        row = t.timeline("c1")["interactions"][0]
+        self.assertEqual(row["in"], "come mi chiamo?")
+        self.assertEqual(row["out"], "Stefano")
+
+    def test_timeline_not_capped_at_200(self) -> None:
+        # una sessione di laboratorio lunga supera le 200 interazioni: lo
+        # storico in memoria non si tronca più
+        t = gateway.SessionTracker(None)
+        for _ in range(205):
+            t.record("c1", "chat", "1", 200, 1, 1, 1.0, ip="10.0.0.1")
+        self.assertEqual(len(t.timeline("c1")["interactions"]), 205)
+
+    def test_window_all_ignores_cutoff(self) -> None:
+        t = gateway.SessionTracker(None)
+        t.record("old", "chat", "1", 200, 1, 1, 1.0, ip="10.0.0.1")
+        with t._lock:
+            t._sessions["old"]["last_seen"] = time.time() - 9999
+        t.record("new", "chat", "1", 200, 1, 1, 1.0, ip="10.0.0.1")
+        self.assertEqual(t.active_list(None)["total"], 2)  # all
+        self.assertEqual(t.active_list(300)["total"], 1)   # finestra
+
+
+class AdminPageTest(unittest.TestCase):
+    """Pannello educatore (change admin-osservabilita): finestra selezionabile,
+    filtro IP, espansione dell'interazione, banner privacy rimosso."""
+
+    def _read(self) -> str:
+        with open(os.path.join(_REPO, "backend/web/static/admin.html"), encoding="utf-8") as f:
+            return f.read()
+
+    def test_window_selector(self) -> None:
+        body = self._read()
+        for w in ("300", "600", "900", "1800", "all"):
+            self.assertIn(f'data-w="{w}"', body)
+        # la finestra viaggia come query param dell'elenco sessioni
+        self.assertIn("window=", body)
+
+    def test_ip_shown_and_filterable(self) -> None:
+        body = self._read()
+        self.assertIn("last_ip", body)   # l'IP arriva dalla risposta API
+        self.assertIn("ip=", body)       # e torna come filtro query
+        self.assertIn("IPF", body)       # stato del filtro (chip attivo)
+
+    def test_interaction_expands_content(self) -> None:
+        body = self._read()
+        # il click espande i contenuti completi già nella risposta (design D4)
+        self.assertIn("it.in", body)
+        self.assertIn("it.out", body)
+        self.assertIn("open", body)
+
+    def test_chat_rows_show_turns(self) -> None:
+        """La riga chat dichiara quanti messaggi la richiesta trasportava:
+        senza memoria = sempre 1 turno, con memoria = crescenti. È il segnale
+        «questa chat aveva memoria, ero al turno N» per l'educatore."""
+        body = self._read()
+        self.assertIn("it.turns", body)
+        self.assertIn("turno", body)
+
+    def test_conversation_view(self) -> None:
+        """Vista conversazione: i delta impilati ricostruiscono il transcript
+        (design D3 — la cronologia non si memorizza, si ricostruisce)."""
+        body = self._read()
+        self.assertIn("tlview", body)              # toggle vista
+        self.assertIn("renderConversation", body)  # renderer del transcript
+        self.assertIn("msg user", body)            # bolle 👤/🤖
+        self.assertIn("msg ai", body)
+
+    def test_open_state_preserved_across_refresh(self) -> None:
+        """L'auto-refresh ricostruisce il DOM ogni 3s: lo stato "espansa" di una
+        interazione vive in una mappa lato JS e viene riapplicato al re-render,
+        altrimenti ogni tick chiude i dettagli che l'educatore sta leggendo."""
+        body = self._read()
+        self.assertIn("var OPEN", body)        # mappa delle voci espanse
+        self.assertIn("OPEN[key]", body)       # riapplicata quando si ricostruisce
+        self.assertIn("delete OPEN[key]", body)  # toggle al click
+
+    def test_privacy_banner_removed(self) -> None:
+        body = self._read()
+        self.assertNotIn("Solo <b>metadati</b>", body)
+        self.assertNotIn('class="privacy"', body)
+        # niente finestra hardcoded
+        self.assertNotIn("ultimi 5 min", body)
+
+
+class SessionPersistenceTest(unittest.TestCase):
+    """Persistenza sqlite3 (revisione admin-osservabilita): lo storico sopravvive
+    ai riavvii del gateway — load-all all'avvio (design D7/D8), nessun import
+    del JSONL legacy (D9: il DB nasce vuoto)."""
+
+    def test_load_on_startup(self) -> None:
+        db = os.path.join(tempfile.mkdtemp(), "sessions.db")
+        t1 = gateway.SessionTracker(db)
+        t1.record("c1", "chat", "1", 200, 5, 3, 9.0,
+                  in_text="ciao", out_text="ehi", ip="10.0.0.5")
+        t1.record("c2", "scaffold", "3", 200, 10, 10, 20.0, ip="10.0.0.6")
+        # nuovo tracker sullo stesso DB = gateway riavviato (make rebuild)
+        t2 = gateway.SessionTracker(db)
+        self.assertEqual({a["client"] for a in t2.active_list(None)["active"]},
+                         {"c1", "c2"})
+        row = t2.timeline("c1")["interactions"][0]
+        self.assertEqual((row["in"], row["out"], row["ip"]),
+                         ("ciao", "ehi", "10.0.0.5"))
+        self.assertEqual(t2.timeline("c2")["interactions"][0]["kind"], "scaffold")
+
+    def test_reload_restores_ips_counts_and_filters(self) -> None:
+        db = os.path.join(tempfile.mkdtemp(), "sessions.db")
+        t1 = gateway.SessionTracker(db)
+        t1.record("c1", "chat", "1", 200, 1, 1, 1.0, ip="10.0.0.1")
+        t1.record("c1", "chat", "2", 200, 1, 1, 1.0, ip="10.0.0.2")
+        t2 = gateway.SessionTracker(db)
+        got = t2.active_list(None)
+        self.assertEqual(got["active"][0]["count"], 2)
+        self.assertEqual(got["active"][0]["last_ip"], "10.0.0.2")
+        # il filtro per IP copre anche lo storico ricaricato dal DB
+        self.assertEqual(t2.active_list(None, ip="10.0.0.1")["total"], 1)
+        self.assertEqual(t2.active_list(None, ip="10.0.0.2")["total"], 1)
+
+    def test_window_all_covers_reloaded_history(self) -> None:
+        # riga presente SOLO nel DB: dopo il "riavvio" resta visibile con
+        # window=all e cade da una finestra breve, come deve
+        db = os.path.join(tempfile.mkdtemp(), "sessions.db")
+        t1 = gateway.SessionTracker(db)
+        t1.record("old", "chat", "1", 200, 1, 1, 1.0, ip="10.0.0.1")
+        t2 = gateway.SessionTracker(db)
+        with t2._lock:
+            t2._sessions["old"]["last_seen"] = time.time() - 9999
+        self.assertEqual(t2.active_list(None)["total"], 1)
+        self.assertEqual(t2.active_list(300)["total"], 0)
 
 
 class NginxTierTest(unittest.TestCase):

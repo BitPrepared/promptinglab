@@ -345,7 +345,8 @@ var state = { step: 0, modelActive: null, modelName: null, clients: 0, maxStep: 
 
 /* ============ Identità client + fetch con header/timeout/errori ============
  * Ogni browser ha un ID stabile (localStorage) inviato come X-Client-Id, così
- * l'educatore può seguirne le interazioni (log + pannello /admin). Solo metadati. */
+ * l'educatore può seguirne le interazioni (log + pannello /admin), complete
+ * di contenuti: la supervisione è parte del laboratorio. */
 function _uuid() {
   return "c-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
 }

@@ -48,12 +48,12 @@ sua scelta da consumer fidato. (LAN offline fidata: niente auth.)
 | `GET /admin`           | nginx (static)     | pannello educatore            |
 | `GET /api/health`      | gateway → skill `/health` | smoke test             |
 | `GET /api/model-status`| gateway → llama `/health` | banner "modello attivo?" |
-| `GET /api/sessions(<id>)` | gateway        | osservabilità (solo metadati) |
+| `GET /api/sessions(<id>)` | gateway        | osservabilità (finestra `?window=`, filtro `?ip=`) |
 | `POST /api/scaffold`   | gateway → skill `/scaffold` | **tappa 3** (SkillOutput) |
 | `POST /api/chat`       | gateway → llama `/v1/chat/completions` | **tappe 1/2/4** (chat libera, body normalizzato) |
 
 Env del gateway: `SKILL_URL` (skill), `LLAMA_URL` (llama), `GATEWAY_PORT`
-(8090), `LAB_SESSIONS_DIR`, `LAB_LOG_VERBOSE`, `LAB_ACTIVE_WINDOW`.
+(8090), `LAB_SESSIONS_DIR`, `LAB_ACTIVE_WINDOW`.
 Config nginx: [`../../nginx.conf`](../../nginx.conf).
 
 ## Avvio rapido (locale, senza Docker)
@@ -170,23 +170,29 @@ Per seguire cosa fanno i ragazzi collegati (e una persona in particolare):
 - **Log terminale strutturati** (`make logs`): ogni richiesta con client-ID, tappa,
   esito, durata. Segui uno: `make logs | grep '#<cid>'`.
   `[2026-08-13 22:05:11] #marco-123 POST /api/scaffold -> 200 (1ms) [kind=scaffold in=70 out=1267]`
-- **Pannello educatore** → <http://localhost:8090/admin>: lista ragazzi collegati
-  (ID anonimo, n. interazioni, tappe, ultima attività) + timeline di uno
-  selezionato. Auto-refresh 3s.
-- **API** (solo metadati): `GET /api/sessions` (attivi), `GET /api/sessions/<cid>`
-  (timeline), `GET /api/model-status` (`{model_active, model?, clients}`).
-- **Storage sessioni** (debug a posteriori): ogni interazione → riga JSONL in
-  `sessions/sessions.jsonl` (volume bind `./sessions`). Si legge offline dopo il campo.
+- **Pannello educatore** → <http://localhost:8090/admin>: elenco sessioni con
+  finestra selezionabile (5/10/15/30 min o tutto lo storico del processo), IP
+  visibile e filtrabile, timeline con interazioni espanse al click (contenuti
+  completi). Auto-refresh 3s.
+- **API**: `GET /api/sessions` (`?window=<sec>|all`, `?ip=<addr>`),
+  `GET /api/sessions/<cid>` (timeline con contenuti), `GET /api/model-status`
+  (`{model_active, model?, clients}`).
+- **Storage sessioni** (supervisione a posteriori): ogni interazione → riga nel
+  DB **sqlite3** `sessions/sessions.db` (volume bind `./sessions`), con metadati,
+  IP e testi in/out completi. Lo storico sopravvive a riavvii e rebuild (il
+  gateway ricarica l'archivio all'avvio); si azzera con `make clean-sessions`.
+  Il vecchio `sessions.jsonl` resta archivio legacy, non più scritto.
 
-**Privacy**: log, pannello, API e storage contengono **solo metadati** (chi/come
-ID anonimo, quando, tappa, esito, durata, lunghezze) — **mai** il testo degli
-appunti/chat/risposte. `LAB_LOG_VERBOSE=1` (OFF di default) aggiunge anteprime
-troncate per debug, da attivare consapevolmente.
+**Supervisione**: log, pannello, API e storage contengono metadati (ID, IP,
+quando, tappa, esito, durata) **e il contenuto completo** delle interazioni
+(ultimo messaggio utente + risposta per la chat; appunti + struttura per la
+skill) — la postura "solo metadati" è stata rimossa nel change
+`admin-osservabilita`.
 
 ```sh
 make logs                  # log live
 make admin                 # URL del pannello educatore
-curl -s localhost:8090/api/sessions     # metadati, niente contenuti
+curl -s localhost:8090/api/sessions     # elenco con finestra/filtro
 ```
 
 ## File
@@ -194,7 +200,8 @@ curl -s localhost:8090/api/sessions     # metadati, niente contenuti
 - [`../gateway.py`](../gateway.py) — **il gateway** (tier 2, stdlib): SOLO
   endpoint `/api/*` — proxy `/api/scaffold` (skill), `/api/chat` (llama, body
   normalizzato), `/api/model-status` (probe + modello + n. utenti),
-  osservabilità (log, tracker thread-safe, storage JSONL, `/api/sessions(<id>)`).
+  osservabilità (log, tracker thread-safe, storage sqlite3 persistente,
+  `/api/sessions(<id>)`).
 - [`../../nginx.conf`](../../nginx.conf) — **tier 1**: statici + reverse proxy
   `/api/*` → gateway (same-origin, no CORS).
 - `client.py` — client condiviso pagina/CLI (POST → `SkillOutput` JSON).
@@ -202,5 +209,6 @@ curl -s localhost:8090/api/sessions     # metadati, niente contenuti
   toolbox di dialogo (chat per 1/2/4, skill per la 3), banner arricchito (modello
   + n. utenti), gestione errori (offline/timeout/retry), anteprima HTML sandbox
   in tappa 4. Un solo file, CSS/JS inline, zero CDN.
-- `static/admin.html` — pannello educatore (solo metadati, zero CDN).
+- `static/admin.html` — pannello educatore (finestra selezionabile, filtro IP,
+  interazioni con contenuti, zero CDN).
 - `static/favicon.svg` — favicon (servita su `/favicon.ico` da nginx).

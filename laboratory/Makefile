@@ -18,7 +18,7 @@ COMPOSE     := docker compose
 PROFILE     := --profile model
 
 .DEFAULT_GOAL := help
-.PHONY: help up pi-up demo down rebuild logs admin open status ps test clean pull
+.PHONY: help up pi-up demo down rebuild logs admin open status ps test clean clean-sessions pull
 
 help:  ## mostra questo aiuto
 	@echo "Laboratorio web — target disponibili:"
@@ -27,8 +27,9 @@ help:  ## mostra questo aiuto
 	@echo "  make pi-up     come up, ma per host Pi 3 (override: 0.5B obbligatorio)"
 	@echo "  make rebuild   ricostruisce le immagini (codice Python) e riparte col modello"
 	@echo "  make down      ferma e rimuove tutti i container (anche llama)"
+	@echo "  make clean-sessions  azzera lo storico delle sessioni (ferma il gateway)"
 	@echo "  make logs      tail dei log di tutti i service (segui un utente: grep '#<cid>')"
-	@echo "  make admin     URL del pannello educatore (sessions, solo metadati)"
+	@echo "  make admin     URL del pannello educatore (sessions, finestra/filtro IP)"
 	@echo "  make open      URL della pagina laboratorio"
 	@echo "  make ps        stato dei container"
 	@echo "  make status    probe: modello attivo + n. utenti (/api/model-status)"
@@ -63,7 +64,7 @@ ps:  ## stato dei container
 status:  ## probe model-status (modello attivo?)
 	@curl -s http://localhost:8090/api/model-status; echo
 
-admin:  ## URL del pannello educatore (sessions, solo metadati)
+admin:  ## URL del pannello educatore (sessions, finestra/filtro IP)
 	@echo "Pannello educatore:  http://localhost:8090/admin"
 	@echo "Sessions (JSON):     curl -s localhost:8090/api/sessions"
 
@@ -76,6 +77,11 @@ test:  ## suite di test
 clean:  ## ferma tutto + pulisce orfani e reti dangling (risolve 'network not found')
 	-$(COMPOSE) $(PROFILE) down --remove-orphans
 	docker network prune -f
+
+clean-sessions:  ## azzera lo storico delle sessioni (ferma il gateway, rimuove il DB)
+	-$(COMPOSE) stop gateway
+	rm -f sessions/sessions.db
+	@echo "Archivio sessioni azzerato. Riparti con: make up"
 
 pull:  ## scarica l'immagine llama.cpp (server CPU)
 	$(COMPOSE) $(PROFILE) pull

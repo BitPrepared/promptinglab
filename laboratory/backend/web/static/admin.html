@@ -16,23 +16,32 @@
   header { max-width:1100px; margin:0 auto; padding:22px 0 6px; }
   header h1 { font-size:1.5rem; margin:0 0 2px; color:var(--accent); }
   header .sub { color:var(--dim); font-size:.92rem; }
-  .privacy { max-width:1100px; margin:10px auto 0; padding:10px 14px; border-radius:10px;
-    background:var(--panel); border:1px solid var(--warn); color:var(--warn); font-size:.9rem; }
   main { max-width:1100px; margin:14px auto 0; display:grid; grid-template-columns:340px 1fr; gap:14px; }
   @media (max-width:760px){ main{ grid-template-columns:1fr; } }
   .col { background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:12px; min-height:200px; }
   .col h2 { font-size:1rem; margin:0 0 8px; color:var(--accent-2); text-transform:uppercase; letter-spacing:.04em; }
   .meta-top { color:var(--dim); font-size:.88rem; margin-bottom:8px; }
+  .wbar { display:flex; gap:4px; flex-wrap:wrap; margin-bottom:8px; }
+  .wbtn { background:var(--panel-2); color:var(--dim); border:1px solid var(--line);
+    border-radius:7px; padding:2px 9px; font-size:.82rem; cursor:pointer; }
+  .wbtn:hover { border-color:var(--accent); }
+  .wbtn.on { color:var(--ink); border-color:var(--accent); background:var(--panel); }
+  .chip { display:inline-block; background:var(--panel-2); border:1px solid var(--accent);
+    color:var(--accent); border-radius:999px; padding:1px 9px; font-size:.8rem;
+    margin-bottom:8px; cursor:pointer; font-family:ui-monospace,Menlo,Consolas,monospace; }
   .ulist { list-style:none; margin:0; padding:0; }
   .uitem { padding:9px 10px; border:1px solid var(--line); border-radius:8px; margin:6px 0; cursor:pointer; }
   .uitem:hover { border-color:var(--accent); }
   .uitem.sel { border-color:var(--accent); background:var(--panel-2); }
   .uitem .cid { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:.85rem; color:var(--accent); }
+  .uitem .ipf { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:.8rem;
+    color:var(--accent-2); cursor:pointer; }
+  .uitem .ipf:hover { text-decoration:underline; }
   .uitem .row2 { color:var(--dim); font-size:.82rem; margin-top:2px; }
   .empty { color:var(--dim); font-style:italic; padding:8px 0; }
   .tl { list-style:none; margin:0; padding:0; }
   .tl li { padding:7px 10px; border-left:3px solid var(--accent); background:var(--panel-2);
-    border-radius:0 6px 6px 0; margin:6px 0; font-size:.9rem; }
+    border-radius:0 6px 6px 0; margin:6px 0; font-size:.9rem; cursor:pointer; }
   .tl li.chat { border-left-color:var(--accent-2); }
   .tl li.err { border-left-color:var(--warn); }
   .tl .k { color:var(--accent); font-weight:600; }
@@ -40,6 +49,22 @@
   .badge { display:inline-block; background:var(--panel-2); border:1px solid var(--line);
     border-radius:999px; padding:1px 7px; font-size:.74rem; color:var(--dim); margin-left:4px; }
   .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--accent-2); margin-right:4px; vertical-align:middle; }
+  .it-body { display:none; margin-top:6px; border-top:1px dashed var(--line); padding-top:6px; }
+  .tl li.open .it-body { display:block; }
+  .it-body .lab { color:var(--dim); font-size:.74rem; text-transform:uppercase; letter-spacing:.04em; margin:4px 0 0; }
+  .it-body pre { margin:2px 0 6px; white-space:pre-wrap; word-break:break-word;
+    font:0.82rem/1.4 ui-monospace,Menlo,Consolas,monospace; color:var(--ink); }
+  /* vista conversazione: delta impilati = transcript ricostruito (design D3) */
+  .tl li.msg { display:flex; gap:8px; margin:8px 0; border:0; background:none; cursor:default; padding:0; }
+  .tl li.msg .who { font-size:1.05rem; }
+  .tl li.msg .bub { background:var(--panel-2); border:1px solid var(--line); border-radius:10px;
+    padding:7px 10px; white-space:pre-wrap; word-break:break-word; font-size:.9rem; max-width:100%; }
+  .tl li.msg.user .bub { border-color:var(--accent); }
+  .tl li.msg.ai .bub { border-color:var(--accent-2); }
+  .cmeta { color:var(--dim); font-size:.74rem; margin-top:4px; }
+  .tl li.div { border:1px dashed var(--line); border-radius:8px; padding:5px 10px;
+    margin:10px 0; color:var(--dim); font-size:.82rem; cursor:pointer;
+    border-left:3px solid var(--warn); background:var(--panel-2); }
   a.back { color:var(--accent); text-decoration:none; }
   .load { color:var(--dim); }
 </style>
@@ -49,20 +74,27 @@
   <h1>Controllo sala esercitazione</h1>
   <div class="sub">Laboratorio di Prompting — monitora chi è collegato e cosa fa · <a class="back" href="/">← torna alla pagina</a></div>
 </header>
-<div class="privacy">
-  Solo <b>metadati</b>: chi (ID anonimo), quando, quale tappa, esito, durata.
-  Nessun contenuto degli appunti o delle chat dei ragazzi. Aggiornamento automatico ogni 3s.
-</div>
 
 <main>
   <div class="col">
-    <h2>Ragazzi collegati</h2>
+    <h2>Sessioni</h2>
+    <div class="wbar" id="wbar">
+      <button class="wbtn" data-w="300">5m</button>
+      <button class="wbtn" data-w="600">10m</button>
+      <button class="wbtn" data-w="900">15m</button>
+      <button class="wbtn" data-w="1800">30m</button>
+      <button class="wbtn" data-w="all">Tutto</button>
+    </div>
+    <div id="ipbar"></div>
     <div class="meta-top" id="count">—</div>
     <ul class="ulist" id="ulist"><li class="empty">caricamento…</li></ul>
   </div>
   <div class="col">
     <h2 id="tl-title">Timeline</h2>
-    <div class="meta-top" id="tl-meta">Seleziona un ragazzo a sinistra.</div>
+    <div class="wbar" style="justify-content:flex-end">
+      <button class="wbtn" id="tlview" type="button">Vista: conversazione</button>
+    </div>
+    <div class="meta-top" id="tl-meta">Seleziona una sessione a sinistra.</div>
     <ul class="tl" id="tl"><li class="empty">—</li></ul>
   </div>
 </main>
@@ -70,7 +102,13 @@
 <script>
 "use strict";
 var SEL = null;
+var IPF = null;   // filtro IP attivo (o null)
+var WIN = "300";  // finestra dell'elenco: secondi oppure "all"
 var TICK = 3000;
+var OPEN = {};    // interazioni espanse (chiave "ts|kind"): l'auto-refresh
+                  // ricostruisce il DOM, lo stato deve vivere fuori da esso
+var TL_CID = null; // sessione renderizzata nella timeline (cambio = reset espansioni)
+var VIEW = "tl";  // "tl" = timeline, "chat" = conversazione ricostruita dai delta
 
 function ago(ts) {
   if (!ts) return "—";
@@ -84,22 +122,49 @@ function esc(s) { var d = document.createElement("div"); d.textContent = s == nu
 function stepName(step) {
   return ({ "1": "① Context", "2": "② System", "3": "③ Skills", "4": "④ Workflow", "5": "⑤ Prompt Eng." })[step] || ("tappa " + (step || "?"));
 }
+function winLabel() {
+  return WIN === "all" ? "tutto lo storico" : "ultimi " + (WIN / 60) + " min";
+}
+
+function setWindow(w) {
+  WIN = w;
+  var btns = document.getElementById("wbar").getElementsByClassName("wbtn");
+  for (var i = 0; i < btns.length; i++) btns[i].className = "wbtn" + (btns[i].getAttribute("data-w") === w ? " on" : "");
+  loadList();
+}
+function setIpFilter(ip) { IPF = (ip === IPF) ? null : ip; renderIpBar(); loadList(); }
+function renderIpBar() {
+  var bar = document.getElementById("ipbar");
+  bar.innerHTML = "";
+  if (!IPF) return;
+  var c = document.createElement("span");
+  c.className = "chip";
+  c.textContent = "IP " + IPF + " ✕";
+  c.title = "rimuovi filtro";
+  c.onclick = function () { IPF = null; renderIpBar(); loadList(); };
+  bar.appendChild(c);
+}
 
 function loadList() {
-  fetch("/api/sessions").then(function (r) { return r.json(); }).then(function (d) {
+  var q = "?window=" + WIN + (IPF ? "&ip=" + encodeURIComponent(IPF) : "");
+  fetch("/api/sessions" + q).then(function (r) { return r.json(); }).then(function (d) {
     var ul = document.getElementById("ulist");
     document.getElementById("count").textContent =
-      d.total + (d.total === 1 ? " ragazzo attivo" : " ragazzi attivi") + " (ultimi 5 min)";
-    if (!d.active.length) { ul.innerHTML = '<li class="empty">nessuno collegato</li>'; return; }
+      d.total + (d.total === 1 ? " sessione" : " sessioni") + " (" + winLabel() + ")";
+    if (!d.active.length) { ul.innerHTML = '<li class="empty">nessuna sessione</li>'; return; }
     ul.innerHTML = "";
     d.active.forEach(function (a) {
       var li = document.createElement("li");
       li.className = "uitem" + (a.client === SEL ? " sel" : "");
       li.innerHTML =
         '<span class="dot"></span><span class="cid">' + esc(short(a.client)) + "</span>" +
+        ' <span class="ipf" title="filtra questo IP">' + esc(a.last_ip || "—") + "</span>" +
         '<div class="row2">' + a.count + (a.count === 1 ? " interazione" : " interazioni") +
         " · " + ago(a.last_seen) +
         (a.steps && a.steps.length ? ' · tappe ' + a.steps.join(",") : "") + "</div>";
+      li.querySelector(".ipf").onclick = (function (ip) {
+        return function (ev) { ev.stopPropagation(); if (ip) setIpFilter(ip); };
+      })(a.last_ip);
       li.onclick = (function (cid) { return function () { SEL = cid; loadList(); loadTimeline(cid); }; })(a.client);
       ul.appendChild(li);
     });
@@ -107,6 +172,7 @@ function loadList() {
 }
 
 function loadTimeline(cid) {
+  if (cid !== TL_CID) { TL_CID = cid; OPEN = {}; }
   document.getElementById("tl-title").textContent = "Timeline · " + short(cid);
   document.getElementById("tl-meta").textContent = "caricamento…";
   fetch("/api/sessions/" + encodeURIComponent(cid)).then(function (r) { return r.json(); }).then(function (d) {
@@ -114,23 +180,85 @@ function loadTimeline(cid) {
     document.getElementById("tl-meta").textContent =
       (d.interactions.length ? d.interactions.length : 0) + " interazioni · ultima " + ago(d.last_seen);
     if (!d.interactions.length) { tl.innerHTML = '<li class="empty">nessuna interazione</li>'; return; }
+    if (VIEW === "chat") { renderConversation(d); return; }
     tl.innerHTML = "";
-    // timeline in ordine cronologico (più recente in fondo)
+    // timeline in ordine cronologico (più recente in fondo); il click espande
+    // i contenuti completi già presenti nella risposta (nessun round-trip)
     d.interactions.slice().reverse().forEach(function (it) {
+      var key = it.ts + "|" + it.kind;
       var li = document.createElement("li");
-      li.className = (it.kind === "chat" ? "chat" : "") + (it.status >= 400 ? " err" : "");
+      li.className = (it.kind === "chat" ? "chat" : "") + (it.status >= 400 ? " err" : "") +
+        (OPEN[key] ? " open" : "");
       li.innerHTML =
         '<span class="when">' + new Date(it.ts * 1000).toLocaleTimeString() + " · " + ago(it.ts) + "</span>" +
         '<span class="k">' + esc(it.kind || "?") + "</span> " + stepName(it.step) +
         ' <span class="badge">' + it.status + "</span>" +
         ' <span class="badge">' + Math.round(it.ms) + "ms</span>" +
-        '<div class="row2">in ' + (it.in_len || 0) + " car · out " + (it.out_len || 0) + " car</div>";
+        (it.turns ? ' <span class="badge">' + it.turns + (it.turns === 1 ? " turno" : " turni") + "</span>" : "") +
+        '<div class="row2">in ' + (it.in_len || 0) + " car · out " + (it.out_len || 0) + " car</div>" +
+        '<div class="it-body">' +
+        '<div class="lab">Ingresso</div><pre>' + esc(it.in || "—") + "</pre>" +
+        '<div class="lab">Uscita</div><pre>' + esc(it.out || "—") + "</pre>" +
+        "</div>";
+      li.onclick = function () {
+        if (OPEN[key]) { delete OPEN[key]; li.classList.remove("open"); }
+        else { OPEN[key] = 1; li.classList.add("open"); }
+      };
       tl.appendChild(li);
     });
   }).catch(function () { document.getElementById("tl-meta").textContent = "errore caricamento"; });
 }
 
-loadList();
+/* Vista conversazione: le righe sono delta (D3), impilandole in ordine
+ * cronologico la conversazione torna intera — la tab B «con memoria» si legge
+ * come transcript, la A «senza» come battute che si ignorano. */
+function renderConversation(d) {
+  var tl = document.getElementById("tl");
+  tl.innerHTML = "";
+  d.interactions.slice().forEach(function (it) {
+    if (it.kind === "chat") {
+      var u = document.createElement("li");
+      u.className = "msg user";
+      u.innerHTML = '<span class="who">👤</span><div class="bub">' + esc(it.in || "—") + "</div>";
+      tl.appendChild(u);
+      var a = document.createElement("li");
+      a.className = "msg ai";
+      a.innerHTML = '<span class="who">🤖</span><div class="bub">' + esc(it.out || "—") +
+        '<div class="cmeta">' + new Date(it.ts * 1000).toLocaleTimeString() +
+        (it.turns ? " · " + it.turns + (it.turns === 1 ? " turno" : " turni") : "") +
+        (it.status >= 400 ? " · err " + it.status : "") + "</div></div>";
+      tl.appendChild(a);
+    } else {
+      var key = it.ts + "|" + it.kind;
+      var li = document.createElement("li");
+      li.className = "div" + (OPEN[key] ? " open" : "");
+      li.innerHTML = "🛠 " + esc(it.kind || "?") + " · " + stepName(it.step) +
+        ' <span class="when">' + new Date(it.ts * 1000).toLocaleTimeString() + "</span>" +
+        '<div class="it-body"><div class="lab">Ingresso</div><pre>' + esc(it.in || "—") + "</pre>" +
+        '<div class="lab">Uscita</div><pre>' + esc(it.out || "—") + "</pre></div>";
+      li.onclick = function () {
+        if (OPEN[key]) { delete OPEN[key]; li.classList.remove("open"); }
+        else { OPEN[key] = 1; li.classList.add("open"); }
+      };
+      tl.appendChild(li);
+    }
+  });
+}
+
+function toggleView() {
+  VIEW = (VIEW === "tl") ? "chat" : "tl";
+  document.getElementById("tlview").textContent =
+    "Vista: " + (VIEW === "tl" ? "conversazione" : "timeline");
+  if (SEL) loadTimeline(SEL);
+}
+
+document.getElementById("wbar").addEventListener("click", function (ev) {
+  var t = ev.target.closest ? ev.target.closest(".wbtn") : null;
+  if (t) setWindow(t.getAttribute("data-w"));
+});
+document.getElementById("tlview").addEventListener("click", toggleView);
+setWindow(WIN);
+renderIpBar();
 setInterval(function () { loadList(); if (SEL) loadTimeline(SEL); }, TICK);
 </script>
 </body>
