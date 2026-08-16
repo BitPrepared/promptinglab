@@ -331,6 +331,16 @@ tu: «Che fatica! Chi c'era con te? E com'è finita?»</pre>
     <p>Con un buon prompt l'IA smette di essere "chat generica" e diventa un
        <b>programma</b> che genera un artefatto reale. Prova a generare il codice di
        una card per la vostra app:</p>
+    <div class="row" style="margin:6px 0 2px;align-items:center;gap:10px;flex-wrap:wrap">
+      <label for="temp5" style="color:var(--dim);font-size:.94rem">🌡 Temperatura</label>
+      <input type="range" id="temp5" min="0" max="1.5" step="0.1" value="0.3"
+             style="flex:1;min-width:180px;max-width:320px">
+      <span id="temp5-val" style="font-family:ui-monospace,Menlo,Consolas,monospace">0.3</span>
+    </div>
+    <div style="margin:0 0 8px;color:var(--dim);font-size:.85rem">
+      0 = precisa e ripetitiva · alta = creativa — regolala, poi guarda nel popup { }
+      quale temperatura è partita davvero
+    </div>
     <div class="chat-toolbox" id="tb5"></div>
     <div class="row" style="margin-top:12px">
       <label style="color:var(--dim);font-size:.94rem;display:flex;align-items:center;gap:6px">
@@ -572,8 +582,10 @@ function makeChat(root, opts) {
     // tab A (senza memoria): parte SOLO l'ultimo messaggio; il resto resta nostro
     var toSend = (opts.memory === false) ? hist.slice(-1) : hist.slice();
     var body = { messages: (sys ? [{ role: "system", content: sys }] : []).concat(toSend) };
-    // il gateway clampa comunque (0–1.5): qui chiediamo solo la preferenza
-    if (opts.temperature != null) body.temperature = opts.temperature;
+    // il gateway clampa comunque (0–1.5): qui chiediamo solo la preferenza —
+    // che può essere fissa (tappe ②③) o letta al volo (slider della ⑤)
+    var tp = (typeof opts.temperature === "function") ? opts.temperature() : opts.temperature;
+    if (tp != null) body.temperature = tp;
     labFetch("/api/chat", { method: "POST", body: JSON.stringify(body) }, opts.step, 150000)
     .then(function (res) {
       spin.remove();
@@ -748,12 +760,19 @@ document.getElementById("skill-rule").textContent =
   TRIGGER_WORDS.join(" · ") + ". Qui la decisione la prende una regola fissa; " +
   "nel mondo reale decide l'agente, leggendo la descrizione della skill.";
 
-/* Tappa 5: prompt engineering, seed precompilato + anteprima HTML opzionale. */
+/* Tappa 5: prompt engineering, seed precompilato + anteprima HTML opzionale.
+ * La temperatura è LA lezione di questa tappa: slider in mano al ragazzo
+ * (default di aderenza; il gateway resta l'arbitro, la trace mostra l'applicato). */
 var SEED = "Scrivi il codice HTML e CSS di una card per la nostra app scout: titolo \"La nostra impresa\", una breve descrizione, un colore di sfondo verde. Rispondi SOLO con il codice, nessuna spiegazione.";
+var $temp5 = document.getElementById("temp5");
+var $temp5val = document.getElementById("temp5-val");
+function temp5Value() { return parseFloat($temp5.value); }
+$temp5.addEventListener("input", function () { $temp5val.textContent = $temp5.value; });
 makeChat(document.getElementById("tb5"), {
   placeholder: "Modifica il prompt o scrivi il tuo…",
   step: 5, meter: true,
   seed: function () { return SEED; },
+  temperature: temp5Value,
   onReply: maybeRenderPreview
 });
 

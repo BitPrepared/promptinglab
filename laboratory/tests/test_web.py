@@ -1236,6 +1236,23 @@ class SkillWorkflowPageTest(unittest.TestCase):
         self.assertEqual(empty, [], msg=f"aree vuote nell'esempio completo: {empty}")
 
     # --- Sanità DOM: ogni id usato dal JS esiste nel markup ------------------
+    # --- Tappa ⑤: temperatura regolabile (change temperatura-tappa5) --------
+    def test_step5_temperature_slider(self) -> None:
+        body = self._read()
+        # slider nei limiti del gateway, default di aderenza, valore live
+        self.assertIn('id="temp5"', body)
+        self.assertIn('min="0"', body)
+        self.assertIn('max="1.5"', body)
+        self.assertIn('step="0.1"', body)
+        self.assertIn('value="0.3"', body)
+        self.assertIn("temp5-val", body)
+        # didattica: una riga che spiega il significato
+        self.assertIn("ripetitiva", body)
+        # makeChat legge la temperatura anche come funzione (pattern seed)
+        self.assertIn("typeof opts.temperature", body)
+        # wiring: la tappa ⑤ invia il valore corrente dello slider
+        self.assertIn("temp5Value", body)
+
     def test_every_js_id_exists_in_markup(self) -> None:
         """Regressione: rinominare un id nel markup (tb4 -> tb5) senza aggiornare
         il getElementById corrispondente fa esplodere makeChat a runtime
