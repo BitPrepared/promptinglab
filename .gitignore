@@ -9,14 +9,14 @@ documenti/
 openspec/changes/
 
 # --- Runtime ---------------------------------------------------------------
-diariobot/sessions/
+laboratory/sessions/
 **/__pycache__/
 *.py[cod]
 .pytest_cache/
 
-# --- Modelli GGUF (scaricati a parte, vedi diariobot/README) --------------
-diariobot/models/*.gguf
-diariobot/models/*.bin
+# --- Modelli GGUF (scaricati a parte, vedi laboratory/README) --------------
+laboratory/models/*.gguf
+laboratory/models/*.bin
 
 # --- OS / editor -----------------------------------------------------------
 .DS_Store
