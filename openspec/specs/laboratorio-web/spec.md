@@ -6,12 +6,17 @@ Pagina web e server offline che fanno vivere ai ragazzi, sui loro Raspberry Pi, 
 
 ### Requirement: Pagina laboratorio con percorso guidato
 
-La pagina web SHALL presentare il percorso di prompting del Flusso §3.4 — Context Injection, System Prompt, Skills, Prompt Engineering — accompagnato dalla teoria (Oracolo/allucinazioni, "l'IA ti vuole lì", responsabilità del validatore) e da esempi. Il contenuto didattico SHALL essere fruibile anche senza interagire col modello.
+La pagina web SHALL presentare il percorso di prompting del Flusso §3.4 articolato in cinque tappe — Context Injection, System Prompt, Skills, Workflow, Prompt Engineering — accompagnato dalla teoria (Oracolo/allucinazioni, "l'IA ti vuole lì", responsabilità del validatore) e da esempi. Il contenuto didattico SHALL essere fruibile anche senza interagire col modello.
 
 #### Scenario: Ragazzo segue una tappa
 
 - **WHEN** un ragazzo apre la pagina e naviga alla tappa "System Prompt"
 - **THEN** la pagina mostra la spiegazione del concetto e un esempio, leggibili senza invocare il modello
+
+#### Scenario: Percorso a cinque tappe
+
+- **WHEN** un ragazzo consulta la navigazione del percorso
+- **THEN** vede cinque tappe numerate in ordine: ① Context Injection, ② System Prompt, ③ Skills, ④ Workflow, ⑤ Prompt Engineering
 
 ### Requirement: Interazione con la skill dalla pagina
 
@@ -139,7 +144,7 @@ La tappa "Context Injection" SHALL presentare due tab affiancabili in sequenza: 
 
 ### Requirement: Contatore token del contesto
 
-Le chat delle tappe ①, ② e ④ SHALL mostrare un contatore del contesto in token reali ricevuti dal modello, nel formato `uso/limite` con barra di riempimento. Il limite mostrato SHALL corrispondere alla finestra di contesto effettivamente configurata sul servizio modello. La barra SHALL segnalare visivamente l'avvicinarsi del limite.
+Le chat delle tappe ①, ②, ③ e ⑤ SHALL mostrare un contatore del contesto in token reali ricevuti dal modello, nel formato `uso/limite` con barra di riempimento. Il limite mostrato SHALL corrispondere alla finestra di contesto effettivamente configurata sul servizio modello. La barra SHALL segnalare visivamente l'avvicinarsi del limite.
 
 #### Scenario: Il contatore cresce a ogni turno
 
@@ -150,6 +155,11 @@ Le chat delle tappe ①, ② e ④ SHALL mostrare un contatore del contesto in t
 
 - **WHEN** nella tappa ② è attivo un system prompt e il contatore tiene conto dei suoi token
 - **THEN** il conteggio include il system prompt oltre alla cronologia, mostrando che condividono la stessa finestra
+
+#### Scenario: La skill occupa contesto
+
+- **WHEN** nella tappa ③ la skill si carica nella conversazione
+- **THEN** il contatore cresce per i token della skill, mostrando che anche le istruzioni vivono nella stessa finestra di contesto
 
 ### Requirement: Contesto pieno gestito in modo amichevole
 
@@ -162,7 +172,7 @@ Quando l'esaurimento della finestra di contesto causa un errore del servizio mod
 
 ### Requirement: Nuova conversazione
 
-Ogni chat delle tappe ① e ② SHALL avere un pulsante "Nuova conversazione" che svuota la cronologia inviata al modello e il contatore di token. Il contenuto didattico della pagina MUST NOT essere cancellato dal reset.
+Ogni chat delle tappe ①, ② e ③ SHALL avere un pulsante "Nuova conversazione" che svuota la cronologia inviata al modello e il contatore di token. Il contenuto didattico della pagina MUST NOT essere cancellato dal reset.
 
 #### Scenario: Reset della conversazione
 
@@ -188,13 +198,71 @@ La tappa "System Prompt" SHALL permettere la scelta del system prompt solo trami
 - **WHEN** il ragazzo conversa con un preset attivo
 - **THEN** le risposte del modello riflettono la personalità/vincolo del system prompt scelto, con la cronologia mantenuta tra i turni
 
+### Requirement: Tappa Skills con caricamento visibile della skill
+
+La tappa "Skills" SHALL presentare una skill fissa («Diario di Bordo», versione conversazionale) leggibile in pagina su due livelli: la descrizione (sempre visibile, è quella che "decide" il caricamento) e il corpo (le istruzioni complete). La tappa SHALL offrire una chat con memoria con area blob come la tappa ②. Quando il messaggio dell'utente soddisfa la regola di caricamento (dichiarata visibilmente sotto la chat), la skill SHALL entrare davvero nel contesto della chiamata — il comportamento del modello cambia di conseguenza — e l'attivazione SHALL essere evidenziata in tre punti: blocco ⚙ SKILL nel blob, divisore «Skill caricata» nel dialogo al momento dell'attivazione, e badge ⚙ sulle risposte prodotte mentre la skill è attiva. La skill MUST restare caricata per tutta la conversazione: messaggi successivi, anche fuori tema, non la scaricano. Il reset («Nuova conversazione») MUST scaricare la skill, lasciando il contesto vuoto fino a un nuovo innescamento. La pagina SHALL dichiarare che nel mondo reale la decisione di caricare la skill spetta all'agente, mentre qui è simulata da una regola deterministica.
+
+#### Scenario: La skill è leggibile senza invocare il modello
+
+- **WHEN** il ragazzo naviga alla tappa ③
+- **THEN** la pagina mostra descrizione e corpo della skill, leggibili senza alcuna interazione col modello
+
+#### Scenario: Attivazione su domanda pertinente
+
+- **WHEN** il ragazzo chiede «come scrivo il diario di oggi?»
+- **THEN** la richiesta inoltrata contiene il testo della skill, il blob mostra il blocco ⚙ SKILL, il dialogo mostra il divisore «Skill caricata», e la risposta — prodotta con le istruzioni della skill — reca il badge ⚙
+
+#### Scenario: Domanda fuori tema non carica la skill
+
+- **WHEN** il ragazzo scrive un messaggio che non soddisfa la regola di caricamento
+- **THEN** la richiesta inoltrata non contiene la skill, il blob non mostra il blocco ⚙ e la risposta non reca il badge
+
+#### Scenario: La skill resta caricata nella conversazione
+
+- **WHEN** dopo l'attivazione il ragazzo scrive un messaggio fuori tema
+- **THEN** la skill resta nel contesto (blob e contatore la riflettono) e la risposta successiva mantiene il badge ⚙
+
+#### Scenario: Il reset scarica la skill
+
+- **WHEN** il ragazzo preme "Nuova conversazione" con la skill attiva
+- **THEN** il contesto torna vuoto (niente blocco ⚙ nel blob) e serve un nuovo messaggio pertinente per caricarla di nuovo
+
+### Requirement: Tappa Workflow con pipeline visibile
+
+L'esperienza «Diario di Bordo» (appunti → scaffold) SHALL essere presentata come quarta tappa «Workflow»: durante l'elaborazione la pipeline — controllo dell'ingresso, chiamata al modello, validazione dell'output — SHALL essere visibile come sequenza di stage sintetici (mai chain-of-thought del modello). Ogni stage SHALL dichiarare chi lo esegue — codice o modello — rendendo visibile che una sola riga è la chiamata all'LLM e tutto il resto è codice che controlla prima e valida dopo. A elaborazione completata la tappa SHALL mostrare i token consumati dalla chiamata al modello (ingresso e uscita) quando il servizio li fornisce; in assenza, la riga SHALL essere omessa senza errori. La risposta di `/api/scaffold` SHALL includere i conteggi token del backend quando disponibili (estensione retrocompatibile: i client che li ignorano continuano a funzionare). La tappa SHALL esplicitare il confronto con la tappa ③: stesso obiettivo, ma qui è il codice a orchestrare il modello (prompt fisso, contratto di output, validazione), non il modello a leggere istruzioni. Il contratto dell'interazione (appunti grezzi → scaffold + domande + check, senza prosa) resta invariato.
+
+#### Scenario: Stage del workflow visibili durante l'elaborazione
+
+- **WHEN** il ragazzo avvia l'elaborazione degli appunti
+- **THEN** la pagina mostra gli stage del workflow che avanzano in sequenza (lettura, estrazione, controllo) prima di restituire l'output
+
+#### Scenario: Ogni stage dichiara chi lo esegue
+
+- **WHEN** la pipeline avanza
+- **THEN** ogni riga è etichettata come codice o modello, e una sola riga — l'estrazione — è la chiamata all'LLM
+
+#### Scenario: Token del workflow visibili a fine elaborazione
+
+- **WHEN** l'elaborazione completa e il servizio ha fornito i conteggi token
+- **THEN** la tappa mostra i token di ingresso e di uscita della chiamata al modello; se il servizio non li fornisce, la riga non appare e niente va in errore
+
+#### Scenario: Confronto skill vs workflow esplicito
+
+- **WHEN** il ragazzo legge la tappa ④
+- **THEN** trova la distinzione tra il meccanismo della ③ (istruzioni che il modello legge) e quello della ④ (codice che orchestra il modello)
+
+#### Scenario: Contratto dell'elaborazione invariato
+
+- **WHEN** il ragazzo incolla appunti grezzi e avvia l'elaborazione
+- **THEN** riceve scaffold strutturato, domande di approfondimento e check, senza prosa narrativa — come nella versione precedente della tappa
+
 ### Requirement: Limiti di generazione espliciti nell'interfaccia
 
-Le chat delle tappe ①, ② e ④ SHALL dichiarare visivamente i limiti imposti dal server: il tetto di token della risposta (256, default difensivo del gateway) accanto alla finestra di contesto (2048), con l'indicazione che sono limiti server-side non modificabili dal client. I valori mostrati MUST corrispondere a quelli effettivamente applicati dal gateway.
+Le chat delle tappe ①, ②, ③ e ⑤ SHALL dichiarare visivamente i limiti imposti dal server: il tetto di token della risposta (256, default difensivo del gateway) accanto alla finestra di contesto (2048), con l'indicazione che sono limiti server-side non modificabili dal client. I valori mostrati MUST corrispondere a quelli effettivamente applicati dal gateway.
 
 #### Scenario: Il ragazzo vede entrambi i limiti
 
-- **WHEN** il ragazzo apre una delle chat delle tappe ①, ② o ④
+- **WHEN** il ragazzo apre una delle chat delle tappe ①, ②, ③ o ⑤
 - **THEN** l'interfaccia mostra il limite di risposta (max 256 token) e quello di contesto (2048 token), etichettati come imposti dal server
 
 #### Scenario: Risposta troncata riconoscibile
