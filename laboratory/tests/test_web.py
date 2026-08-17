@@ -398,6 +398,59 @@ class ChatBridgeTest(unittest.TestCase):
         self.assertEqual(body["retry_after"], 10)
         self.assertIn("sovraccarico", body["error"])
 
+    def test_chat_429_reopens_when_window_ages(self) -> None:
+        """Self-healing (regressione osservata al campo): sotto lockout i 429
+        non producono punti nuovi, quindi l'unico ricambio della finestra è
+        l'invecchiamento. Con la finestra TEMPORALE il cancello si riapre da
+        solo entro _CHAT_TPS_WINDOW_S dall'ultima chat lenta: il carico finito
+        non lascia 429 a vita."""
+        orig = gateway._TRACKER
+        tmp = tempfile.mkdtemp()
+        slow = gateway.SessionTracker(os.path.join(tmp, "slow.db"))
+        for _ in range(5):
+            slow.record("slow", "chat", "1", 200, 1, 1, 5000.0,
+                        tok_in=1, tok_out=5)
+        gateway._TRACKER = slow
+        try:
+            body_ok = {"messages": [{"role": "user", "content": "ciao"}]}
+            status, _ = self._post("/api/chat", body_ok)
+            self.assertEqual(status, 429)  # finestra ancora calda
+            # le osservazioni invecchiano oltre la finestra temporale
+            with slow._lock:
+                for s in slow._sessions.values():
+                    for row in s["recent"]:
+                        row["ts"] -= gateway._CHAT_TPS_WINDOW_S + 1.0
+            status, body = self._post("/api/chat", body_ok)
+            self.assertEqual(status, 200)  # cancello riaperto dal ricambio
+            self.assertIn("reply", body)
+        finally:
+            gateway._TRACKER = orig
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_tps_endpoint_includes_rejected_429(self) -> None:
+        """/api/tps porta anche i 429 di backpressure («rejected»): il grafico
+        dell'educatore deve raccontare il carico che NON è passato, oltre al
+        ritmo di quello passato."""
+        orig = gateway._TRACKER
+        tmp = tempfile.mkdtemp()
+        slow = gateway.SessionTracker(os.path.join(tmp, "slow.db"))
+        for _ in range(5):
+            slow.record("slow", "chat", "1", 200, 1, 1, 5000.0,
+                        tok_in=1, tok_out=5)
+        gateway._TRACKER = slow
+        try:
+            status, _ = self._post("/api/chat",
+                                   {"messages": [{"role": "user", "content": "ciao"}]})
+            self.assertEqual(status, 429)  # registrato anche lui (kind chat)
+            status, body = self._get("/api/tps")
+            self.assertEqual(status, 200)
+            self.assertEqual(len(body["points"]), 5)      # solo le chat passate
+            self.assertEqual(len(body["rejected"]), 1)    # ...e il rifiuto
+            self.assertIn("ts", body["rejected"][0])
+        finally:
+            gateway._TRACKER = orig
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def test_chat_ok_when_tps_healthy(self) -> None:
         """Con cadenza sana niente 429: il meccanismo scatta solo sul degrado
         (e mai a freddo, con poche osservazioni)."""
@@ -1035,6 +1088,28 @@ class AdminPageTest(unittest.TestCase):
         self.assertIn('"#e5534b"', body)        # la linea rossa
         self.assertIn("backpressure", body)     # etichetta sul target
 
+    def test_tps_chart_time_axis_advances(self) -> None:
+        """Regressione (osservato al campo): l'asse X era a indice di punto, così
+        senza nuove chat il grafico restava congelato sull'ultima richiesta —
+        sotto 429 proprio quando serviva vederlo muovere. Ora la finestra è
+        temporale e ancorata a «adesso»: scorre a ogni tick."""
+        body = self._read()
+        self.assertIn("TPS_WINDOW_S", body)          # finestra temporale
+        self.assertIn("Date.now()", body)            # ancorata a «adesso»
+        self.assertIn("adesso", body)                # etichetta del bordo destro
+        self.assertIn("nessuna chat negli ultimi", body)  # finestra vuota visibile
+        # niente più posizionamento a indice: il punto sta al suo posto nel tempo
+        self.assertIn("xAt(p.ts)", body)
+        self.assertNotIn("xAt(i)", body)
+
+    def test_tps_chart_shows_rejected_429(self) -> None:
+        """Il carico che NON passa (429 di backpressure) non produce punti:
+        senza una serie dedicata il grafico non racconta il sovraccarico.
+        Ora i rifiuti viaggiano in «rejected» e diventano tacche rosse."""
+        body = self._read()
+        self.assertIn("rejected", body)         # serie dei 429 dal gateway
+        self.assertIn("429:", body)             # conteggio nella didascalia
+
     def test_ip_filter_input(self) -> None:
         """Revisione: il filtro IP si scrive anche a mano, non solo col click
         sull'IP del riquadro."""
@@ -1210,6 +1285,27 @@ class NginxTierTest(unittest.TestCase):
             # la pagina chiama SOLO /api/* (mai :8081 diretto)
             self.assertNotIn(":8081", body)
             self.assertNotIn("8080", body)
+
+    def test_static_tier_has_no_emoji(self) -> None:
+        """Il font del kiosk non ha glifi emoji: nelle pagine non si vedono
+        (buchi al posto di icone, osservato al campo al primo 429). Le icone
+        sono SVG inline nello sprite della pagina; i glifi testuali comuni
+        (① ✓ ✕ … «») restano perché coperti dal font di sistema."""
+        emoji = re.compile(
+            "[\U0001F000-\U0001FAFF"      # blocchi emoji veri e propri
+            "☀-⛿"               # misc symbols: ⚠ ⚙ ☁ …
+            "✀-✒✔✖-➿"  # dingbats, salvo ✓ (2713) e ✕ (2715)
+            "⬀-⯿️"         # frecce-star, variation selector
+            "]")
+        for rel in ["backend/web/static/index.html",
+                    "backend/web/static/admin.html",
+                    "backend/web/static/favicon.svg"]:
+            body = self._read(rel)
+            m = emoji.search(body)
+            self.assertIsNone(
+                m, f"{rel}: glifo emoji non renderizzabile "
+                   f"({body[m.start():m.start() + 2]!r} a offset {m.start()})"
+                if m else f"{rel}: contiene emoji")
 
 
 class ContextMemoryPageTest(unittest.TestCase):
@@ -1403,8 +1499,9 @@ class SkillWorkflowPageTest(unittest.TestCase):
 
     def test_step3_activation_highlighted_three_ways(self) -> None:
         body = self._read()
-        self.assertIn('id="blob3-skill"', body)          # (a) blocco ⚙ nel blob
-        self.assertIn("⚙ SKILL", body)
+        self.assertIn('id="blob3-skill"', body)          # (a) blocco skill nel blob
+        self.assertIn('href="#i-gear"', body)            # icona SVG (le emoji non si vedono)
+        self.assertIn("SKILL · Diario di Bordo", body)
         self.assertIn("skill-loaded", body)              # (b) divisore nel dialogo
         self.assertIn("Skill «Diario di Bordo» caricata", body)
         self.assertIn("skill-badge", body)               # (c) badge sulle risposte
@@ -1562,6 +1659,12 @@ class SkillWorkflowPageTest(unittest.TestCase):
         self.assertIn("retry_after", body)
         self.assertIn("doPost", body)          # il turno si può ritentare
         self.assertIn("1000)", body)           # attesa in ms prima del retry
+        # il retry NON è una tantum: sotto carico sostenuto il primo retry
+        # riceve un altro 429 e il turno andrebbe perso (regressione osservata
+        # al campo) — si riprova finché il gateway smette di dire 429
+        self.assertIn("res.status === 429 && j.overload", body)
+        self.assertNotIn("retried", body)
+        self.assertIn("overloadWait", body)    # countdown visibile durante l'attesa
 
     def test_consumi_rendered_as_table(self) -> None:
         """Revisione: forma tabellare (non una riga) con il confronto COMPLETO —

@@ -61,6 +61,8 @@
   /* vista conversazione: delta impilati = transcript ricostruito (design D3) */
   .tl li.msg { display:flex; gap:8px; margin:8px 0; border:0; background:none; cursor:default; padding:0; }
   .tl li.msg .who { font-size:1.05rem; }
+  /* icone SVG inline (niente emoji: il font del kiosk non le copre) */
+  .ic { width:1em; height:1em; vertical-align:-.13em; }
   .tl li.msg .bub { background:var(--panel-2); border:1px solid var(--line); border-radius:10px;
     padding:7px 10px; white-space:pre-wrap; word-break:break-word; font-size:.9rem; max-width:100%; }
   .tl li.msg.user .bub { border-color:var(--accent); }
@@ -96,6 +98,11 @@
 </style>
 </head>
 <body>
+<!-- Mini sprite icone (le emoji non si vedono nel font del kiosk) -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="i-person" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="5" r="2.7"/><path d="M2.8 14c.6-3.3 2.7-5 5.2-5s4.6 1.7 5.2 5"/></symbol>
+  <symbol id="i-robot" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3.4" y="6" width="9.2" height="7" rx="1.4"/><path d="M8 6V4.2"/><circle cx="8" cy="3.1" r=".9"/><circle cx="6.1" cy="9.6" r=".75" fill="currentColor" stroke="none"/><circle cx="9.9" cy="9.6" r=".75" fill="currentColor" stroke="none"/><path d="M6.2 12.1h3.6"/></symbol>
+</defs></svg>
 <header>
   <h1>Controllo sala esercitazione</h1>
   <div class="sub">Laboratorio di Prompting — monitora chi è collegato e cosa fa · <a class="back" href="/">← torna alla pagina</a></div>
@@ -250,11 +257,11 @@ function renderConversation(d) {
     if (it.kind === "chat") {
       var u = document.createElement("li");
       u.className = "msg user";
-      u.innerHTML = '<span class="who">👤</span><div class="bub">' + esc(it.in || "—") + "</div>";
+      u.innerHTML = '<span class="who"><svg class="ic" aria-hidden="true"><use href="#i-person" xlink:href="#i-person"/></svg></span><div class="bub">' + esc(it.in || "—") + "</div>";
       tl.appendChild(u);
       var a = document.createElement("li");
       a.className = "msg ai";
-      a.innerHTML = '<span class="who">🤖</span><div class="bub">' + esc(it.out || "—") +
+      a.innerHTML = '<span class="who"><svg class="ic" aria-hidden="true"><use href="#i-robot" xlink:href="#i-robot"/></svg></span><div class="bub">' + esc(it.out || "—") +
         '<div class="cmeta">' + new Date(it.ts * 1000).toLocaleTimeString() +
         (it.turns ? " · " + it.turns + (it.turns === 1 ? " turno" : " turni") : "") +
         (it.status >= 400 ? " · err " + it.status : "") + "</div></div>";
@@ -264,7 +271,7 @@ function renderConversation(d) {
       var key = it.ts + "|" + it.kind;
       var li = document.createElement("li");
       li.className = "div" + (OPEN[key] ? " open" : "");
-      li.innerHTML = "🛠 " + esc(it.kind || "?") + " · " + stepName(it.step) +
+      li.innerHTML = esc(it.kind || "?") + " · " + stepName(it.step) +
         ' <span class="when">' + new Date(it.ts * 1000).toLocaleTimeString() + "</span>" +
         '<div class="it-body"><div class="lab">Ingresso</div><pre>' + esc(it.in || "—") + "</pre>" +
         '<div class="lab">Uscita</div><pre>' + esc(it.out || "—") + "</pre></div>";
@@ -322,30 +329,37 @@ function traceBtn(cid, ts) {
  * Serie globale delle chat recenti: tokens/secondo VISTI DAL GATEWAY (token
  * generati diviso il round-trip, attesa e coda incluse). Non è il benchmark
  * del modello: è il ritmo che il ragazzo sperimenta — e il degrado sotto
- * carico (make loadtest) qui si vede. SVG disegnato a mano, zero librerie. */
+ * carico (make loadtest) qui si vede. SVG disegnato a mano, zero librerie.
+ * L'asse X è il TEMPO, ancorato a «adesso»: la finestra scorre a ogni tick
+ * anche senza nuove chat, così un laboratorio fermo (o sotto 429) si vede
+ * come striscia vuota che avanza, non come grafico congelato. */
 var TPS_NS = "http://www.w3.org/2000/svg";
-var TPS_FLOOR = 10;  // = _CHAT_TPS_FLOOR del gateway: target di backpressure
-                     // (il test li tiene sincroni)
+var TPS_FLOOR = 10;    // = _CHAT_TPS_FLOOR del gateway: target di backpressure
+                       // (il test li tiene sincroni)
+var TPS_WINDOW_S = 600;  // quanti secondi di storia tenere a schermo (10 min)
 function renderTps() {
   fetch("/api/tps").then(function (r) { return r.json(); }).then(function (d) {
     var box = document.getElementById("tps");
     var pts = (d && d.points) || [];
-    if (!pts.length) {
+    var rejs = (d && d.rejected) || [];
+    if (!pts.length && !rejs.length) {
       box.innerHTML = '<span class="empty">token/s: nessuna chat ancora</span>' +
         '<div class="tt" id="tpstip" hidden></div>';
       return;
     }
-    var tpsVals = pts.map(function (p) { return p.tps; }).sort(function (a, b) { return a - b; });
+    var now = Date.now() / 1000;
+    var t0 = now - TPS_WINDOW_S;
+    var win = pts.filter(function (p) { return p.ts >= t0; });
+    var rj = rejs.filter(function (p) { return p.ts >= t0; });
+    var tpsVals = win.map(function (p) { return p.tps; }).sort(function (a, b) { return a - b; });
     var maxT = tpsVals[tpsVals.length - 1] || 1;
-    var med = tpsVals[Math.floor(tpsVals.length / 2)];
+    var med = tpsVals.length ? tpsVals[Math.floor(tpsVals.length / 2)] : 0;
     // la scala include SEMPRE il target: la linea rossa non sparisce mai
     var top = Math.max(maxT, TPS_FLOOR);
     // margini: sinistra per i tick Y, sotto per gli orari
     var W = 600, H = 96, ML = 42, MR = 8, MT = 8, MB = 16;
     var plotW = W - ML - MR, plotH = H - MT - MB;
-    var xAt = function (i) {
-      return ML + (pts.length === 1 ? plotW / 2 : (i / (pts.length - 1)) * plotW);
-    };
+    var xAt = function (ts) { return ML + ((ts - t0) / TPS_WINDOW_S) * plotW; };
     var yAt = function (v) { return MT + plotH - (v / top) * plotH; };
     var svg = document.createElementNS(TPS_NS, "svg");
     svg.setAttribute("viewBox", "0 0 " + W + " " + H);
@@ -373,39 +387,55 @@ function renderTps() {
     svg.appendChild(el("text", { x: W - MR, y: ry - 3, "font-size": 9,
       "text-anchor": "end", fill: "#e5534b" },
       "target " + TPS_FLOOR + " t/s (backpressure)"));
-    // orari agli estremi della serie
+    // orari agli estremi della finestra: il destro è SEMPRE «adesso»
     var hhmm = function (ts) { return new Date(ts * 1000).toLocaleTimeString(); };
     svg.appendChild(el("text", { x: ML, y: H - 3, "font-size": 9,
-      fill: "var(--dim)" }, hhmm(pts[0].ts)));
+      fill: "var(--dim)" }, hhmm(t0)));
     svg.appendChild(el("text", { x: W - MR, y: H - 3, "font-size": 9,
-      "text-anchor": "end", fill: "var(--dim)" }, hhmm(pts[pts.length - 1].ts)));
-    // la serie
-    svg.appendChild(el("polyline", { fill: "none", stroke: "var(--accent)",
-      "stroke-width": 2,
-      points: pts.map(function (p, i) {
-        return xAt(i).toFixed(1) + "," + yAt(p.tps).toFixed(1);
-      }).join(" ") }));
-    // punti con tooltip: valori puntuali al passaggio del mouse
-    var tip = document.getElementById("tpstip");
-    pts.forEach(function (p, i) {
-      var c = el("circle", { cx: xAt(i).toFixed(1), cy: yAt(p.tps).toFixed(1),
-        r: 3, fill: "var(--accent)", stroke: "transparent", "stroke-width": 6 });
-      c.addEventListener("mouseenter", function () {
-        tip.textContent = hhmm(p.ts) + " · " + p.client + " · " + p.tps +
-          " t/s · " + p.tok_out + " token in " + (p.ms / 1000).toFixed(1) + " s";
-        tip.hidden = false;
-      });
-      c.addEventListener("mousemove", function (ev) {
-        tip.style.left = (ev.clientX + 12) + "px";
-        tip.style.top = (ev.clientY - 26) + "px";
-      });
-      c.addEventListener("mouseleave", function () { tip.hidden = true; });
-      svg.appendChild(c);
+      "text-anchor": "end", fill: "var(--dim)" }, "adesso " + hhmm(now)));
+    // i 429 di backpressure: tacche rosse sulla base — il carico che NON è
+    // passato (e che quindi non produce punti) resta visibile nel grafico
+    rj.forEach(function (p) {
+      svg.appendChild(el("line", { x1: xAt(p.ts).toFixed(1), x2: xAt(p.ts).toFixed(1),
+        y1: H - MB - 8, y2: H - MB - 1,
+        stroke: "#e5534b", "stroke-width": 2 }));
     });
+    var tip = document.getElementById("tpstip");
+    if (win.length) {
+      // la serie, alla posizione nel tempo
+      svg.appendChild(el("polyline", { fill: "none", stroke: "var(--accent)",
+        "stroke-width": 2,
+        points: win.map(function (p) {
+          return xAt(p.ts).toFixed(1) + "," + yAt(p.tps).toFixed(1);
+        }).join(" ") }));
+      // punti con tooltip: valori puntuali al passaggio del mouse
+      win.forEach(function (p) {
+        var c = el("circle", { cx: xAt(p.ts).toFixed(1), cy: yAt(p.tps).toFixed(1),
+          r: 3, fill: "var(--accent)", stroke: "transparent", "stroke-width": 6 });
+        c.addEventListener("mouseenter", function () {
+          tip.textContent = hhmm(p.ts) + " · " + p.client + " · " + p.tps +
+            " t/s · " + p.tok_out + " token in " + (p.ms / 1000).toFixed(1) + " s";
+          tip.hidden = false;
+        });
+        c.addEventListener("mousemove", function (ev) {
+          tip.style.left = (ev.clientX + 12) + "px";
+          tip.style.top = (ev.clientY - 26) + "px";
+        });
+        c.addEventListener("mouseleave", function () { tip.hidden = true; });
+        svg.appendChild(c);
+      });
+    } else {
+      // finestra vuota: il tempo che avanza senza chat è informazione, non buco
+      svg.appendChild(el("text", { x: (ML + W - MR) / 2, y: MT + plotH / 2,
+        "font-size": 10, "text-anchor": "middle", fill: "var(--dim)" },
+        "nessuna chat negli ultimi 10 min" +
+        (pts.length ? " · ultima " + hhmm(pts[pts.length - 1].ts) : "")));
+    }
     box.innerHTML = "";
     var lbl = document.createElement("div");
-    lbl.textContent = "token/s (visti dal gateway) · med " + med +
-      " · max " + maxT + " · " + pts.length + " chat — passa sopra i punti";
+    lbl.textContent = "token/s (visti dal gateway) · ultimi 10 min · med " + med +
+      " · max " + maxT + " · " + win.length + " chat · 429: " + rj.length +
+      (win.length ? " — passa sopra i punti" : "");
     box.appendChild(svg);
     box.appendChild(lbl);
     box.appendChild(tip);  // il tooltip vive nel box (ricreato sopra)

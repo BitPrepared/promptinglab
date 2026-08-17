@@ -111,6 +111,10 @@
   .chat-msg.note { color: var(--dim); font-size: .85rem; padding: 1px 11px; }
   .chat-spinner { color: var(--dim); padding: 4px 2px; }
   .chat-spinner::after { content: " …"; }
+  .chat-spinner.wait { color: var(--warn); }
+  /* Icone: il font del kiosk non ha glifi emoji (non si vedono), quindi la
+   * pagina usa solo SVG inline dello sprite in testa al <body>. */
+  .ic { width: 1em; height: 1em; vertical-align: -.13em; }
   .chat-input { display: flex; gap: 8px; align-items: flex-end; }
   .chat-input textarea { min-height: 120px; }
   .chat-input button { flex-shrink: 0; }
@@ -209,6 +213,24 @@
 </style>
 </head>
 <body>
+<!-- Sprite delle icone (niente emoji: il font del kiosk non le copre, si
+     vedrebbero come buchi). Stessa vernice del testo: currentColor. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="i-clock" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.6V8l2.3 1.5"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.1 15 13.9H1Z"/><path d="M8 6.2v3.3"/><path d="M8 11.8v.2"/></symbol>
+  <symbol id="i-chip" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="8" height="8" rx="1"/><path d="M6 4V2.2M8 4V2.2M10 4V2.2M6 12v1.8M8 12v1.8M10 12v1.8M4 6H2.2M4 8H2.2M4 10H2.2M12 6h1.8M12 8h1.8M12 10h1.8"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.8 4.3h10.4M6.4 2.2h3.2M5.2 4.3l.6 9.5h4.4l.6-9.5M7 7.2v3.9M9 7.2v3.9"/></symbol>
+  <symbol id="i-person" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="5" r="2.7"/><path d="M2.8 14c.6-3.3 2.7-5 5.2-5s4.6 1.7 5.2 5"/></symbol>
+  <symbol id="i-robot" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3.4" y="6" width="9.2" height="7" rx="1.4"/><path d="M8 6V4.2"/><circle cx="8" cy="3.1" r=".9"/><circle cx="6.1" cy="9.6" r=".75" fill="currentColor" stroke="none"/><circle cx="9.9" cy="9.6" r=".75" fill="currentColor" stroke="none"/><path d="M6.2 12.1h3.6"/></symbol>
+  <symbol id="i-code" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5.6 4.6 2.4 8l3.2 3.4M10.4 4.6 13.6 8l-3.2 3.4"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="2.1"/><path d="M8 1.4v2M8 12.6v2M1.4 8h2M12.6 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4"/></symbol>
+  <symbol id="i-doc" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 1.8h5.2L12.4 5v9.2H4Z"/><path d="M9.2 1.8V5h3.2M6.2 8.2h3.6M6.2 10.6h3.6"/></symbol>
+  <symbol id="i-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2.6 8.6 6.2 12l7.2-8"/></symbol>
+  <symbol id="i-globe" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6.3"/><ellipse cx="8" cy="8" rx="2.9" ry="6.3"/><path d="M1.7 8h12.6"/></symbol>
+  <symbol id="i-pc" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1.8" y="3" width="12.4" height="8.2" rx="1"/><path d="M5.8 14h4.4M8 11.2V14"/></symbol>
+  <symbol id="i-cloud" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.4h6.1a2.9 2.9 0 0 0 .5-5.7 4.3 4.3 0 0 0-8.2-.8A3.2 3.2 0 0 0 5 12.4Z"/></symbol>
+  <symbol id="i-drop" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 1.8C5.6 5 4.2 7.2 4.2 9.4a3.8 3.8 0 0 0 7.6 0C11.8 7.2 10.4 5 8 1.8Z"/></symbol>
+</defs></svg>
 <header>
   <h1>Laboratorio di Prompting</h1>
   <div class="sub">Il prompt smette di essere una domanda e diventa istruzione tecnica: smetti di subire il tono dell'IA e inizi a programmarlo.</div>
@@ -261,7 +283,7 @@
     </div>
     <div id="blob">
       <div class="blob-title">Il pacchetto che parte verso l'IA — system in testa + cronologia, lo stesso sacco di token:</div>
-      <div class="blob-sys">⚙ SYSTEM · <span id="blob-sys-text">PARLI SOLO come un cavernicolo. Frasi brevissime e grezze, tipo «Io non sapere. Cielo è cielo.». MAI frasi cortesi o complete. Ogni tua risposta è un grugnito. NON rifiutarti mai: rispondi sempre da cavernicolo.</span></div>
+      <div class="blob-sys"><svg class="ic" aria-hidden="true"><use href="#i-gear" xlink:href="#i-gear"/></svg> SYSTEM · <span id="blob-sys-text">PARLI SOLO come un cavernicolo. Frasi brevissime e grezze, tipo «Io non sapere. Cielo è cielo.». MAI frasi cortesi o complete. Ogni tua risposta è un grugnito. NON rifiutarti mai: rispondi sempre da cavernicolo.</span></div>
       <div class="blob-hist" id="blob-hist"><div class="blob-row">… la cronologia appare qui durante la conversazione</div></div>
     </div>
     <div class="chat-toolbox" id="tb2"></div>
@@ -275,7 +297,7 @@
        <b>leggila</b>. Poi chatta: se parli d'altro resta nel cassetto, ma appena
        tocchi il diario… <b>si carica</b>, e la vedi entrare nel pacchetto.</p>
     <div class="card" id="skill-panel">
-      <h3>📄 La skill «Diario di Bordo»</h3>
+      <h3><svg class="ic" aria-hidden="true"><use href="#i-doc" xlink:href="#i-doc"/></svg> La skill «Diario di Bordo»</h3>
       <p id="skill-desc">Aiuta uno scout a costruire il suo diario di bordo: raccoglie i fatti con domande, senza scrivere il diario al posto suo. Questa descrizione sta sempre in memoria: è quella che decide se la skill serve.</p>
       <details>
         <summary>Leggi il corpo della skill (le istruzioni complete — si caricano solo quando servono)</summary>
@@ -295,7 +317,7 @@ tu: «Che fatica! Chi c'era con te? E com'è finita?»</pre>
     </div>
     <div id="blob3">
       <div class="blob-title">Il pacchetto che parte verso l'IA — la skill entra solo quando la conversazione la innesca:</div>
-      <div class="blob-sys" id="blob3-skill" hidden>⚙ SKILL · Diario di Bordo — istruzioni caricate in testa al pacchetto</div>
+      <div class="blob-sys" id="blob3-skill" hidden><svg class="ic" aria-hidden="true"><use href="#i-gear" xlink:href="#i-gear"/></svg> SKILL · Diario di Bordo — istruzioni caricate in testa al pacchetto</div>
       <div class="blob-hist" id="blob3-hist"><div class="blob-row">… niente skill: chiedi qualcosa del tuo diario per farla caricare</div></div>
     </div>
     <div class="chat-toolbox" id="tb3"></div>
@@ -328,9 +350,9 @@ tu: «Che fatica! Chi c'era con te? E com'è finita?»</pre>
         <span style="color:var(--dim);font-size:.9rem">Solo fatti tuoi · niente prosa · offline</span>
       </div>
       <div id="pipeline" class="card">
-        <h3>⛓ La catena di montaggio in azione</h3>
+        <h3>La catena di montaggio in azione</h3>
         <p style="color:var(--dim);font-size:.88rem;margin:4px 0 8px">Ogni riga dice chi
-           lavora: una sola chiamata all'LLM (la riga 🤖 MODELLO),
+           lavora: una sola chiamata all'LLM (la riga MODELLO),
            tutto il resto è codice che controlla prima e valida dopo. Mai
            chain-of-thought: solo quello che fa il codice intorno al modello.</p>
         <div id="events" aria-live="polite"></div>
@@ -346,7 +368,7 @@ tu: «Che fatica! Chi c'era con te? E com'è finita?»</pre>
        <b>programma</b> che genera un artefatto reale. Prova a generare il codice di
        una card per la vostra app:</p>
     <div class="row" style="margin:6px 0 2px;align-items:center;gap:10px;flex-wrap:wrap">
-      <label for="temp5" style="color:var(--dim);font-size:.94rem">🌡 Temperatura</label>
+      <label for="temp5" style="color:var(--dim);font-size:.94rem">Temperatura</label>
       <input type="range" id="temp5" min="0" max="1.5" step="0.1" value="0.3"
              style="flex:1;min-width:180px;max-width:320px">
       <span id="temp5-val" style="font-family:ui-monospace,Menlo,Consolas,monospace">0.3</span>
@@ -392,6 +414,19 @@ function _uuid() {
 var CID;
 try { CID = localStorage.getItem("lab_cid") || _uuid(); localStorage.setItem("lab_cid", CID); }
 catch (e) { CID = "anon"; }  // localStorage non disponibile (kiosk ristretto)
+
+/* Icona dallo sprite SVG interno (le emoji non esistono nel font del kiosk).
+ * In markup statico: <svg class="ic"><use href="#i-nome"/></svg>. */
+function ic(name) {
+  var s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  s.setAttribute("class", "ic");
+  s.setAttribute("aria-hidden", "true");
+  var u = document.createElementNS("http://www.w3.org/2000/svg", "use");
+  u.setAttribute("href", "#i-" + name);
+  u.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", "#i-" + name);
+  s.appendChild(u);
+  return s;
+}
 
 /* fetch con header lab + AbortController (timeout) + traduzione errori di rete. */
 function labFetch(url, opts, step, timeoutMs) {
@@ -460,15 +495,15 @@ function loadConsumi() {
       // forma tabellare: il confronto completo (energia, acqua, costo) si
       // legge per righe, con entrambe le colonne a confronto
       b.innerHTML =
-        "<b>🌍 Costo della tua sessione</b> <span>(" +
+        "<b><svg class='ic' aria-hidden='true'><use href='#i-globe' xlink:href='#i-globe'/></svg> Costo della tua sessione</b> <span>(" +
         d.tok_out + " token generati, " + Math.round(d.secondi) + " s)</span>" +
         "<table>" +
-        "<tr><th></th><th class='loc'>🖥 Qui, sul mini PC</th>" +
-        "<th class='front'>☁️ Su " + testoSicuro(d.frontiera.modello) + "</th></tr>" +
+        "<tr><th></th><th class='loc'><svg class='ic' aria-hidden='true'><use href='#i-pc' xlink:href='#i-pc'/></svg> Qui, sul mini PC</th>" +
+        "<th class='front'><svg class='ic' aria-hidden='true'><use href='#i-cloud' xlink:href='#i-cloud'/></svg> Su " + testoSicuro(d.frontiera.modello) + "</th></tr>" +
         "<tr><th>Energia</th><td class='loc'>" + d.locale.kwh + " kWh</td>" +
         "<td class='front'>" + d.frontiera.kwh + " kWh</td></tr>" +
         "<tr><th>Acqua</th><td class='loc'>≈ 0 L (calcola nel locale)</td>" +
-        "<td class='front'>💧 " + d.frontiera.acqua_l + " L</td></tr>" +
+        "<td class='front'><svg class='ic' aria-hidden='true'><use href='#i-drop' xlink:href='#i-drop'/></svg> " + d.frontiera.acqua_l + " L</td></tr>" +
         "<tr><th>Costo</th><td class='loc'>€ " + d.locale.euro + " (luce)</td>" +
         "<td class='front'>€ " + d.frontiera.euro + " (API)</td></tr>" +
         "</table>";
@@ -480,11 +515,13 @@ function renderBanner() {
   var b = document.getElementById("model-banner");
   if (state.modelActive === null) { b.className = "check"; b.textContent = "Controllo del modello…"; return; }
   if (state.modelActive) {
-    var parts = ["✅ Modello attivo"];
+    var parts = ["Modello attivo"];
     if (state.modelName) parts.push(state.modelName);
     parts.push(state.clients + (state.clients === 1 ? " ragazzo connesso" : " ragazzi connessi"));
     b.className = "ok";
-    b.textContent = parts.join(" · ");
+    b.textContent = "";
+    b.appendChild(ic("check"));
+    b.appendChild(document.createTextNode(" " + parts.join(" · ")));
   } else {
     b.className = "warn";
     b.textContent = "Modello NON attivo";
@@ -512,7 +549,7 @@ function checkModel() {
  * Opzioni del change laboratorio-skill-workflow (tappa ③):
  *  system (fn(testo del messaggio)) — il system può dipendere dal messaggio:
  *         è il gate della skill (si carica quando il testo la innesca)
- *  badge  (fn -> testo o null)      — badge ⚙ sulle risposte prodotte con skill
+ *  badge  (fn -> testo o null)      — badge a forma di ingranaggio sulle risposte prodotte con skill
  * La cronologia inviata È il context injection: il contatore mostra i token
  * reali (usage.prompt_tokens dal gateway), niente stime. */
 var CHATS = [];
@@ -569,14 +606,14 @@ function makeChat(root, opts) {
     (opts.meter ?
       '<div class="ctx-meter">' +
       '<div class="ctx-bar"><div class="ctx-fill"></div></div>' +
-      '<span class="ctx-label">🧠 <b class="ctx-tok">0</b> / ' + CTX_LIMIT + ' token</span>' +
-      '<button class="ghost ctx-reset" type="button">🗑 Nuova conversazione</button>' +
+      '<span class="ctx-label"><svg class="ic" aria-hidden="true"><use href="#i-chip" xlink:href="#i-chip"/></svg> <b class="ctx-tok">0</b> / ' + CTX_LIMIT + ' token</span>' +
+      '<button class="ghost ctx-reset" type="button"><svg class="ic" aria-hidden="true"><use href="#i-trash" xlink:href="#i-trash"/></svg> Nuova conversazione</button>' +
       '</div>' : "") +
     '<div class="chat-log" role="log"></div>' +
     '<div class="chat-input"><textarea rows="2" placeholder="' + (opts.placeholder || "Scrivi all'IA…") + '"></textarea>' +
     '<button class="send" type="button">Invia</button></div>' +
-    '<div class="chat-limits">✍️ risposta max ' + maxOut + ' token' +
-    (opts.meter ? "" : " · 🧠 contesto " + CTX_LIMIT + " token") +
+    '<div class="chat-limits">risposta max ' + maxOut + ' token' +
+    (opts.meter ? "" : ' · <svg class="ic" aria-hidden="true"><use href="#i-chip" xlink:href="#i-chip"/></svg> contesto ' + CTX_LIMIT + " token") +
     ' — limiti imposti dal server</div>';
   var log = root.querySelector(".chat-log");
   var input = root.querySelector("textarea");
@@ -601,10 +638,12 @@ function makeChat(root, opts) {
     if (opts.onHist) opts.onHist(hist);
     if (opts.seed) { input.value = opts.seed(); }
   }
-  function bubble(role, text, cls) {
+  function bubble(role, text, cls, icon) {
     var d = document.createElement("div");
     d.className = "chat-msg " + (cls || (role === "user" ? "me" : "ia"));
-    d.textContent = text;            // anti-XSS: textContent, mai innerHTML sull'output del modello
+    if (icon) d.appendChild(ic(icon));
+    // anti-XSS: il testo è un text node, mai innerHTML sull'output del modello
+    d.appendChild(document.createTextNode((icon ? " " : "") + text));
     log.appendChild(d);
     log.scrollTop = log.scrollHeight;
     return d;
@@ -624,7 +663,7 @@ function makeChat(root, opts) {
     input.value = "";
     bubble("user", text);
     // system valutato PRIMA dello spinner: se il gate carica la skill (tappa ③),
-    // il divisore ⚙ compare tra la domanda e l'attesa della risposta
+    // il divisore della skill compare tra la domanda e l'attesa della risposta
     var sys = opts.system ? opts.system(text) : null;
     var spin = document.createElement("div");
     spin.className = "chat-spinner";
@@ -642,31 +681,56 @@ function makeChat(root, opts) {
     if (tp != null) body.temperature = tp;
     var t0 = Date.now();
     var waiting429 = false;
-    function doPost(retried) {
+    var ovTick = null;               // countdown del 429, vivo solo nell'attesa
+    // attesa da sovraccarico: UN solo avviso, nello spinner, con i secondi che
+    // scendono davvero (il ragazzo vede che il turno è in corso, non appeso)
+    function overloadWait(ra) {
+      var left = ra;
+      spin.textContent = "";
+      spin.className = "chat-spinner wait";
+      spin.appendChild(ic("clock"));
+      var txt = document.createElement("span");
+      spin.appendChild(txt);
+      function paint() { txt.textContent = " laboratorio sovraccarico — riprovo tra " + left + " s"; }
+      paint();
+      if (ovTick) clearInterval(ovTick);
+      ovTick = setInterval(function () { if (left > 1) { left--; paint(); } }, 1000);
+    }
+    function spinStop() {            // chiusura spinner: prima il countdown, poi il nodo
+      if (ovTick) { clearInterval(ovTick); ovTick = null; }
+      spin.remove();
+    }
+    function doPost() {
       labFetch("/api/chat", { method: "POST", body: JSON.stringify(body) }, opts.step, 150000)
       .then(function (res) {
       var j = res.body || {};
-      // backpressure: il gateway dice di aspettare → avviso il ragazzo e
-      // riprovo io dopo retry_after (il turno non si perde)
-      if (res.status === 429 && j.overload && !retried) {
+      // backpressure: finché il gateway risponde 429 il turno resta aperto —
+      // countdown al ragazzo e nuovo tentativo dopo retry_after. Mai una
+      // tantum: sotto carico sostenuto un solo retry perde il turno.
+      if (res.status === 429 && j.overload) {
         var ra = j.retry_after || 10;
         waiting429 = true;
-        spin.textContent = "🚦 sovraccarico — riprovo tra " + ra + " s";
-        note("🚦 il laboratorio è sovraccarico: riprovo automaticamente tra " + ra + " s");
-        setTimeout(function () { waiting429 = false; doPost(true); }, ra * 1000);
+        overloadWait(ra);
+        setTimeout(function () {
+          waiting429 = false;
+          if (ovTick) { clearInterval(ovTick); ovTick = null; }
+          spin.className = "chat-spinner";
+          spin.textContent = "elaborazione";
+          doPost();
+        }, ra * 1000);
         return;
       }
-      spin.remove();
+      spinStop();
       var elapsedMs = Date.now() - t0;
-      if (j.model_active === false) { bubble(null, "⚠️ " + (j.error || "modello non attivo"), "err"); setDisabled(true); state.modelActive = false; renderBanner(); return; }
+      if (j.model_active === false) { bubble(null, j.error || "modello non attivo", "err", "warn"); setDisabled(true); state.modelActive = false; renderBanner(); return; }
       if (!res.ok || j.error) {
         var errTxt = String(j.error || ("errore " + res.status));
         // finestra di contesto esaurita → la lezione, non un errore grezzo
         var eb;
         if (/context|contesto/i.test(errTxt)) {
-          eb = bubble(null, "🧠 Contesto pieno — l'IA non ha più memoria. Premi «Nuova conversazione».", "err");
+          eb = bubble(null, "Contesto pieno — l'IA non ha più memoria. Premi «Nuova conversazione».", "err", "chip");
         } else {
-          eb = bubble(null, "⚠️ " + errTxt, "err");
+          eb = bubble(null, errTxt, "err", "warn");
         }
         addTraceBtn(eb, j.trace);  // D7: anche l'errore è dialogo col servizio
         sendBtn.disabled = false; return;
@@ -675,13 +739,14 @@ function makeChat(root, opts) {
       var ia = bubble("assistant", j.reply);
       addTiming(ia, elapsedMs);    // accanto a { }: quanto ha aspettato il ragazzo
       addTraceBtn(ia, j.trace);    // { }: request/response di QUESTO turno
-      // badge ⚙ (tappa ③): la risposta è stata prodotta con la skill caricata
+      // badge ingranaggio (tappa ③): la risposta è stata prodotta con la skill caricata
       if (opts.badge) {
         var btxt = opts.badge();
         if (btxt) {
           var b = document.createElement("span");
           b.className = "skill-badge";
-          b.textContent = btxt;
+          b.appendChild(ic("gear"));
+          b.appendChild(document.createTextNode(" " + btxt));
           ia.appendChild(b);
         }
       }
@@ -690,21 +755,21 @@ function makeChat(root, opts) {
       // token generati esattamente al tetto — stesso criterio del limite dichiarato
       if (j.finish_reason === "length" ||
           (j.usage && j.usage.completion_tokens >= maxOut)) {
-        note("✂️ risposta tagliata dal limite di " + maxOut + " token");
+        note("risposta tagliata dal limite di " + maxOut + " token");
       }
       setTokens(j.usage ? j.usage.prompt_tokens : null);
       loadConsumi();  // il costo della sessione cresce con ogni risposta
       if (opts.onHist) opts.onHist(hist);
       if (opts.onReply) opts.onReply(j.reply);
       }).catch(function (err) {
-        spin.remove();
-        bubble(null, "⚠️ " + (err && err.message ? err.message : "errore di rete"), "err");
+        spinStop();
+        bubble(null, err && err.message ? err.message : "errore di rete", "err", "warn");
       }).finally(function () {
         // durante l'attesa da 429 il pulsante resta spento: il turno è in corso
         if (!waiting429 && state.modelActive !== false) sendBtn.disabled = false;
       });
     }
-    doPost(false);
+    doPost();
   }
   sendBtn.addEventListener("click", send);
   input.addEventListener("keydown", function (e) {
@@ -751,7 +816,8 @@ function renderBlob(h) {            // blob: system in testa + cronologia sintet
   h.forEach(function (m) {
     var row = document.createElement("div");
     row.className = "blob-row";
-    row.textContent = (m.role === "user" ? "👤 " : "🤖 ") + m.content.slice(0, 80) + (m.content.length > 80 ? "…" : "");
+    row.appendChild(m.role === "user" ? ic("person") : ic("robot"));
+    row.appendChild(document.createTextNode(" " + m.content.slice(0, 80) + (m.content.length > 80 ? "…" : "")));
     bh.appendChild(row);
   });
 }
@@ -797,12 +863,13 @@ function skillActivate() {          // il momento del caricamento, in tre punti
   var log = chat3.root.querySelector(".chat-log");
   var d = document.createElement("div");
   d.className = "chat-msg skill-loaded";
-  d.textContent = "⚙ Skill «Diario di Bordo» caricata";
+  d.appendChild(ic("gear"));
+  d.appendChild(document.createTextNode(" Skill «Diario di Bordo» caricata"));
   log.appendChild(d);
   log.scrollTop = log.scrollHeight;
   renderBlob3();
 }
-function renderBlob3(h) {           // blob ③: blocco ⚙ SKILL in testa quando attiva
+function renderBlob3(h) {           // blob ③: blocco SKILL in testa quando attiva
   if (h) hist3 = h;
   var empty = !hist3.length;
   if (empty) skillActive = false;   // reset («Nuova conversazione») scarica la skill
@@ -818,22 +885,25 @@ function renderBlob3(h) {           // blob ③: blocco ⚙ SKILL in testa quand
   hist3.forEach(function (m) {
     var row = document.createElement("div");
     row.className = "blob-row";
-    row.textContent = (m.role === "user" ? "👤 " : "🤖 ") + m.content.slice(0, 80) + (m.content.length > 80 ? "…" : "");
+    row.appendChild(m.role === "user" ? ic("person") : ic("robot"));
+    row.appendChild(document.createTextNode(" " + m.content.slice(0, 80) + (m.content.length > 80 ? "…" : "")));
     bh.appendChild(row);
   });
 }
 var chat3 = makeChat(document.getElementById("tb3"), {
-  placeholder: "Chiedi qualsiasi cosa… o parla del tuo diario 📔",
+  placeholder: "Chiedi qualsiasi cosa… o parla del tuo diario",
   step: 3, memory: true, meter: true, temperature: 0.3,
   system: skillSystem,
-  badge: function () { return skillActive ? "⚙ skill" : null; },
+  badge: function () { return skillActive ? "skill" : null; },
   onHist: renderBlob3
 });
 /* Regola di caricamento dichiarata sotto la chat (dalla stessa fonte del gate). */
-document.getElementById("skill-rule").textContent =
-  "⚙ Questa skill si carica se il tuo messaggio contiene: " +
+var ruleHost = document.getElementById("skill-rule");
+ruleHost.appendChild(ic("gear"));
+ruleHost.appendChild(document.createTextNode(
+  " Questa skill si carica se il tuo messaggio contiene: " +
   TRIGGER_WORDS.join(" · ") + ". Qui la decisione la prende una regola fissa; " +
-  "nel mondo reale decide l'agente, leggendo la descrizione della skill.";
+  "nel mondo reale decide l'agente, leggendo la descrizione della skill."));
 
 /* Tappa 5: prompt engineering, seed precompilato + anteprima HTML opzionale.
  * La temperatura è LA lezione di questa tappa: slider in mano al ragazzo
@@ -924,7 +994,7 @@ function elabora() {
         var host = $out.querySelector(".scaffold") || $out;
         addTraceBtn(host, res.body.trace);
       });
-    }).catch(function (err) { $ev.innerHTML = '<div class="chat-msg err">⚠️ ' + testoSicuro(err.message) + "</div>"; })
+    }).catch(function (err) { $ev.innerHTML = '<div class="chat-msg err"><svg class="ic" aria-hidden="true"><use href="#i-warn" xlink:href="#i-warn"/></svg> ' + testoSicuro(err.message) + "</div>"; })
     .finally(function () { $go.disabled = false; });
 }
 /* Chi esegue ogni stage: l'estrazione è L'UNICA chiamata al modello, tutto il
@@ -937,7 +1007,8 @@ function stageRow(evName, text) {
   var who = STAGE_WHO[evName] || "code";
   var tag = document.createElement("span");
   tag.className = "ev-who " + (who === "model" ? "who-model" : "who-code");
-  tag.textContent = who === "model" ? "🤖 MODELLO" : "👨‍💻 CODICE";
+  tag.appendChild(ic(who === "model" ? "robot" : "code"));
+  tag.appendChild(document.createTextNode(who === "model" ? " MODELLO" : " CODICE"));
   div.appendChild(tag);
   div.appendChild(document.createTextNode(" " + text));
   return div;
@@ -949,7 +1020,8 @@ function renderTokenRow(u) {
   d.className = "ev ev-tokens";
   var pt = (u.prompt_tokens != null) ? u.prompt_tokens : "?";
   var ct = (u.completion_tokens != null) ? u.completion_tokens : "?";
-  d.textContent = "🧠 token usati dal modello: " + pt + " in ingresso + " + ct + " in uscita";
+  d.appendChild(ic("chip"));
+  d.appendChild(document.createTextNode(" token usati dal modello: " + pt + " in ingresso + " + ct + " in uscita"));
   $ev.appendChild(d);
 }
 function riproduciEventi(events, done) {

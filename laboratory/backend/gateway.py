@@ -83,16 +83,21 @@ _CHAT_MAX_TOKENS_CEILING = 768
 # genera codice HTML/CSS e il default basso la taglia a metà tag — la skill ha
 # già misurato che servono 768 (nemmeno 512 bastavano al suo JSON pretty-print).
 _CHAT_STEP_MAX_TOKENS = {"5": 768}
-# Backpressure (revisione 11): se la mediana delle ultime chat scende sotto
+# Backpressure (revisione 11): se la mediana delle chat RECENTI scende sotto
 # questa cadenza (token/s visti dal gateway), le nuove arrivano 429 con
 # retry_after — il client avvisa il ragazzo e riprova da solo. Mai a freddo:
-# servono almeno _CHAT_TPS_WINDOW osservazioni.
+# servono almeno _CHAT_TPS_MIN_POINTS osservazioni.
 _CHAT_TPS_FLOOR = 10.0
-_CHAT_TPS_WINDOW = 5
+_CHAT_TPS_MIN_POINTS = 3
 _CHAT_RETRY_AFTER_S = 10
-# i punti più vecchi di così non contano: senza ricambio (429 non produce
-# punti) il cancello si riapre da solo e una chat di prova rifresca la finestra
-_CHAT_TPS_MAX_AGE_S = 120.0
+# La finestra è TEMPORALE, non a conteggio: i 429 non producono punti, quindi
+# sotto lockout l'unico ricambio è l'invecchiamento. Con una finestra a
+# conteggio gli ultimi N punti lenti tenevano il cancello chiuso per l'età
+# massima intera anche a carico finito; così il cancello si riapre da solo
+# entro _CHAT_TPS_WINDOW_S dall'ultima chat lenta completata.
+_CHAT_TPS_WINDOW_S = 45.0
+# quante osservazioni recenti guardare prima del filtro d'età (le più fresche)
+_CHAT_TPS_POOL = 64
 _ROLE_OK = ("system", "user", "assistant")
 
 _MODEL_CACHE: dict = {"name": None, "ts": 0.0}
@@ -105,13 +110,13 @@ def _clamp(v, lo, hi):
 def _overloaded(points: list[dict]) -> bool:
     """True se la mediana dei token/s RECENTI è sotto il pavimento: accodare
     altre richieste peggiorerebbe l'attesa di tutti — meglio un 429 onesto.
-    I punti oltre _CHAT_TPS_MAX_AGE_S non contano (self-healing: i 429 non
-    producono punti, senza ricambio il cancello si riapre)."""
+    PRIMA si invecchiano i punti (self-healing: i 429 non ne producono, così
+    il cancello si riapre da solo), POI si guarda la mediana di quelli che
+    restano nella finestra."""
     now = time.time()
-    fresh = [p["tps"] for p in points if now - p["ts"] <= _CHAT_TPS_MAX_AGE_S]
-    if len(fresh) < 3:
-        return False  # a freddo (o osservazioni stale) mai backpressure
-    fresh.sort()
+    fresh = sorted(p["tps"] for p in points if now - p["ts"] <= _CHAT_TPS_WINDOW_S)
+    if len(fresh) < _CHAT_TPS_MIN_POINTS:
+        return False  # a freddo (o finestra svuotata dal ricambio) mai backpressure
     return fresh[len(fresh) // 2] < _CHAT_TPS_FLOOR
 
 
@@ -355,20 +360,27 @@ class SessionTracker:
         """Serie globale del ritmo di generazione (change readme-loadtest-consumi,
         design D3): tokens/s VISTI DAL GATEWAY — tok_out diviso il tempo di
         round-trip, attesa e coda incluse. Non è il benchmark puro del modello:
-        è il ritmo che il ragazzo sperimenta, che è la lezione."""
+        è il ritmo che il ragazzo sperimenta, che è la lezione.
+        `rejected` sono i 429 di backpressure: per il grafico dell'educatore,
+        dove il carico che NON è passato si vede quanto quello passato."""
         with self._lock:
             pts = []
+            rej = []
             for cid, s in self._sessions.items():
                 for row in s["recent"]:
-                    tok_out, ms = row.get("tok_out"), row.get("ms")
-                    if row.get("kind") != "chat" or not tok_out or not ms:
+                    if row.get("kind") != "chat":
                         continue
-                    pts.append({"ts": row["ts"], "client": cid,
-                                "tok_in": row.get("tok_in"), "tok_out": tok_out,
-                                "ms": ms,
-                                "tps": round(tok_out / (ms / 1000.0), 1)})
+                    tok_out, ms = row.get("tok_out"), row.get("ms")
+                    if tok_out and ms:
+                        pts.append({"ts": row["ts"], "client": cid,
+                                    "tok_in": row.get("tok_in"), "tok_out": tok_out,
+                                    "ms": ms,
+                                    "tps": round(tok_out / (ms / 1000.0), 1)})
+                    elif row.get("status") == 429:
+                        rej.append({"ts": row["ts"], "client": cid})
             pts.sort(key=lambda p: p["ts"])
-            return {"points": pts[-limit:]}
+            rej.sort(key=lambda r: r["ts"])
+            return {"points": pts[-limit:], "rejected": rej[-limit:]}
 
 
 _TRACKER = SessionTracker(os.path.join(LAB_SESSIONS_DIR, "sessions.db"))
@@ -516,7 +528,7 @@ class Handler(BaseHTTPRequestHandler):
         data = json.dumps(body).encode("utf-8")
         # backpressure: modello già in affanno → 429 con retry_after invece di
         # accodare un'altra attesa (il client avvisa il ragazzo e riprova)
-        if _overloaded(_TRACKER.tps_points(_CHAT_TPS_WINDOW)["points"]):
+        if _overloaded(_TRACKER.tps_points(_CHAT_TPS_POOL)["points"]):
             self._send_json(
                 429,
                 {"error": "laboratorio sovraccarico: il modello risponde troppo "

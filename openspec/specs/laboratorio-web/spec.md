@@ -108,12 +108,17 @@ Il tier di presentazione (pagina statica) SHALL contenere solo file statici senz
 
 ### Requirement: Pagina leggera per browser su 1 GB
 
-La pagina SHALL minimizzare JavaScript e CSS, non caricare risorse da CDN né servizi esterni, per girare fluidamente nel browser kiosk di un Raspberry Pi 3 / 1 GB.
+La pagina SHALL minimizzare JavaScript e CSS, non caricare risorse da CDN né servizi esterni, per girare fluidamente nel browser kiosk di un Raspberry Pi 3 / 1 GB. Le icone della pagina SHALL essere SVG inline (sprite nel documento stesso): il font del kiosk non copre i glifi emoji, che quindi non si vedono.
 
 #### Scenario: Fluidità sul Pi 3
 
 - **WHEN** la pagina è caricata nel browser kiosk di un Pi 3 / 1 GB
 - **THEN** la navigazione e l'interazione restano reattive senza saturare la memoria
+
+#### Scenario: Icone visibili nel kiosk
+
+- **WHEN** la pagina usa un'icona (stato, avvisi, righe della pipeline)
+- **THEN** è uno SVG inline del documento o un glifo coperto dal font di sistema, mai un'emoji
 
 ### Requirement: Concorrenza come non-goal
 
@@ -412,7 +417,7 @@ La chat della tappa ⑤ Prompt Engineering SHALL esporre un controllo di tempera
 
 ### Requirement: Simulazione di carico e grafico dei token al secondo
 
-Il progetto SHALL fornire un comando (`make loadtest`) che simula N sessioni concorrenti di ragazzi, ognuna con una conversazione a più tappe sulle chat del gateway, producendo un report di esiti e latenze; le sessioni simulate SHALL risultare nell'osservabilità come sessioni normali. Il gateway SHALL registrare i token di prompt e completion di ogni interazione quando il servizio modello li espone, e il pannello educatore SHALL mostrare un grafico della serie tokens/secondo nel tempo, così che il degrado delle performance sotto carico sia visibile.
+Il progetto SHALL fornire un comando (`make loadtest`) che simula N sessioni concorrenti di ragazzi, ognuna con una conversazione a più tappe sulle chat del gateway, producendo un report di esiti e latenze; le sessioni simulate SHALL risultare nell'osservabilità come sessioni normali. Il gateway SHALL registrare i token di prompt e completion di ogni interazione quando il servizio modello li espone, e il pannello educatore SHALL mostrare un grafico della serie tokens/secondo nel tempo, così che il degrado delle performance sotto carico sia visibile. L'asse del tempo del grafico SHALL essere ancorato all'istante corrente e avanzare anche in assenza di nuove chat; i 429 di backpressure SHALL essere rappresentati nel grafico come serie distinta da quella delle chat completate.
 
 #### Scenario: Lancio della simulazione
 
@@ -433,6 +438,16 @@ Il progetto SHALL fornire un comando (`make loadtest`) che simula N sessioni con
 
 - **WHEN** l'educatore apre il pannello e ci sono chat con token registrati
 - **THEN** il grafico mostra la serie tokens/secondo nel tempo, senza librerie esterne
+
+#### Scenario: Il tempo avanza anche senza chat
+
+- **WHEN** non arrivano nuove chat (modello lento, laboratorio fermo o sotto backpressure)
+- **THEN** la finestra del grafico scorre comunque con l'istante corrente: i punti escono a sinistra e il bordo destro è sempre «adesso», non il grafico congelato sull'ultima richiesta
+
+#### Scenario: I 429 sono visibili nel grafico
+
+- **WHEN** il gateway rifiuta chat per backpressure (429)
+- **THEN** il grafico li mostra come serie separata (tacche), così il carico che non è passato è visibile quanto il ritmo di quello passato
 
 ### Requirement: Riquadro dei consumi locale vs frontiera
 
@@ -455,7 +470,7 @@ La pagina del laboratorio SHALL mostrare, per la sessione del ragazzo corrente, 
 
 ### Requirement: Backpressure con 429 al degrado del ritmo
 
-Quando la cadenza di generazione recente (token/secondo visti dal gateway) scende sotto la soglia di sovraccarico, il gateway SHALL rispondere alle nuove chat con 429 indicando il tempo di attesa consigliato (`retry_after`). La pagina SHALL avvisare il ragazzo del sovraccarico e ritentare automaticamente la richiesta dopo l'attesa indicata, senza perdere il turno. La soglia MUST NOT scattare a freddo (poche osservazioni) né rimanere bloccata: le osservazioni oltre una certa età non contano, così il cancello si riapre da solo anche se i 429 non producono nuove osservazioni.
+Quando la cadenza di generazione recente (token/secondo visti dal gateway) scende sotto la soglia di sovraccarico, il gateway SHALL rispondere alle nuove chat con 429 indicando il tempo di attesa consigliato (`retry_after`). La pagina SHALL avvisare il ragazzo del sovraccarico e ritentare automaticamente la richiesta dopo l'attesa indicata, senza perdere il turno; il retry NON è una tantum: finché il gateway risponde 429 la pagina continua a ritentare, con l'attesa resa visibile da un countdown. La soglia MUST NOT scattare a freddo (poche osservazioni) né rimanere bloccata: il verdetto si basa sulle osservazioni di una finestra TEMPORALE, non sugli ultimi N punti — le osservazioni oltre l'età massima non contano e il cancello si riapre da solo, entro l'età massima della finestra dall'ultima chat lenta completata, anche se i 429 non producono nuove osservazioni.
 
 #### Scenario: Degrado → 429 con retry_after
 
@@ -472,7 +487,12 @@ Quando la cadenza di generazione recente (token/secondo visti dal gateway) scend
 - **WHEN** la risposta della chat è un 429 di sovraccarico
 - **THEN** la pagina avvisa il ragazzo ("il laboratorio è sovraccarico") e ritenta da sola dopo l'attesa indicata; il turno non si perde e l'attesa resta visibile nel tempo di risposta mostrato
 
+#### Scenario: Sovraccarico sostenuto → retry a ripetizione
+
+- **WHEN** anche il tentativo successivo riceve 429 di sovraccarico
+- **THEN** la pagina non abbandona il turno con un errore: mostra il countdown dell'attesa e riprova di nuovo, finché il gateway non risponde 200
+
 #### Scenario: Self-healing
 
-- **WHEN** le osservazioni lente invecchiano oltre l'età massima
-- **THEN** la soglia torna a non scattare finché nuove chat non dimostrino il contrario: niente lockout permanente
+- **WHEN** le osservazioni lente invecchiano oltre l'età massima della finestra temporale
+- **THEN** la soglia torna a non scattare finché nuove chat non dimostrino il contrario: niente lockout permanente — dopo la fine del carico i 429 cessano entro l'età massima della finestra, non restano a vita
