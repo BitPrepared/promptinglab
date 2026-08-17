@@ -417,7 +417,7 @@ La chat della tappa ⑤ Prompt Engineering SHALL esporre un controllo di tempera
 
 ### Requirement: Simulazione di carico e grafico dei token al secondo
 
-Il progetto SHALL fornire un comando (`make loadtest`) che simula N sessioni concorrenti di ragazzi, ognuna con una conversazione a più tappe sulle chat del gateway, producendo un report di esiti e latenze; le sessioni simulate SHALL risultare nell'osservabilità come sessioni normali. Il gateway SHALL registrare i token di prompt e completion di ogni interazione quando il servizio modello li espone, e il pannello educatore SHALL mostrare un grafico della serie tokens/secondo nel tempo, così che il degrado delle performance sotto carico sia visibile. Il grafico SHALL rappresentare la serie aggregata per fasce temporali come DUE linee — la media e il minimo di ogni fascia — senza il punta-punta di ogni singola chat raccolta. L'asse del tempo del grafico SHALL essere ancorato all'istante corrente e avanzare anche in assenza di nuove chat; i 429 di backpressure SHALL essere rappresentati nel grafico come serie distinta da quella delle chat completate.
+Il progetto SHALL fornire un comando (`make loadtest`) che simula N sessioni concorrenti di ragazzi, ognuna con una conversazione a più tappe sulle chat del gateway, producendo un report di esiti e latenze; le sessioni simulate SHALL risultare nell'osservabilità come sessioni normali. Il gateway SHALL registrare i token di prompt e completion di ogni interazione quando il servizio modello li espone, e il pannello educatore SHALL mostrare un grafico della serie tokens/secondo nel tempo, così che il degrado delle performance sotto carico sia visibile. Il grafico SHALL rappresentare la serie aggregata per fasce temporali come DUE linee — la media e il minimo di ogni fascia — senza il punta-punta di ogni singola chat raccolta. L'asse del tempo del grafico SHALL essere ancorato all'istante corrente e avanzare anche in assenza di nuove chat; la finestra del grafico SHALL corrispondere alla finestra temporale selezionata nel pannello (5m/10m/15m/30m/tutto); i 429 di backpressure SHALL essere rappresentati nel grafico come serie distinta da quella delle chat completate.
 
 #### Scenario: Lancio della simulazione
 
@@ -443,6 +443,11 @@ Il progetto SHALL fornire un comando (`make loadtest`) che simula N sessioni con
 
 - **WHEN** non arrivano nuove chat (modello lento, laboratorio fermo o sotto backpressure)
 - **THEN** la finestra del grafico scorre comunque con l'istante corrente: i punti escono a sinistra e il bordo destro è sempre «adesso», non il grafico congelato sull'ultima richiesta
+
+#### Scenario: Il grafico segue la finestra selezionata
+
+- **WHEN** l'educatore seleziona una finestra dell'elenco (5m, 10m, 15m, 30m o tutto)
+- **THEN** il grafico mostra esattamente quella finestra, ridisegnato subito, con fasce di aggregazione proporzionate alla larghezza
 
 #### Scenario: I 429 sono visibili nel grafico
 

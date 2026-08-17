@@ -167,6 +167,7 @@ function setWindow(w) {
   var btns = document.getElementById("wbar").getElementsByClassName("wbtn");
   for (var i = 0; i < btns.length; i++) btns[i].className = "wbtn" + (btns[i].getAttribute("data-w") === w ? " on" : "");
   loadList();
+  renderTps();  // il grafico racconta la stessa finestra dell'elenco
 }
 function setIpFilter(ip) { IPF = (ip === IPF) ? null : ip; renderIpBar(); loadList(); }
 function renderIpBar() {
@@ -332,12 +333,14 @@ function traceBtn(cid, ts) {
  * carico (make loadtest) qui si vede. SVG disegnato a mano, zero librerie.
  * L'asse X è il TEMPO, ancorato a «adesso»: la finestra scorre a ogni tick
  * anche senza nuove chat, così un laboratorio fermo (o sotto 429) si vede
- * come striscia vuota che avanza, non come grafico congelato. */
+ * come striscia vuota che avanza, non come grafico congelato.
+ * La finestra è quella selezionata nell'elenco (5m…tutto): grafico ed elenco
+ * raccontano lo stesso pezzo di laboratorio. */
 var TPS_NS = "http://www.w3.org/2000/svg";
-var TPS_FLOOR = 10;    // = _CHAT_TPS_FLOOR del gateway: target di backpressure
-                       // (il test li tiene sincroni)
-var TPS_WINDOW_S = 600;  // quanti secondi di storia tenere a schermo (10 min)
-var TPS_BUCKET_S = 30;   // aggregazione: media e minimo per fascia di questo passo
+var TPS_FLOOR = 10;        // = _CHAT_TPS_FLOOR del gateway: target di backpressure
+                           // (il test li tiene sincroni)
+var TPS_MIN_BUCKET_S = 30; // passo MINIMO delle fasce di aggregazione: cresce con
+                           // la finestra selezionata, le linee restano leggibili
 function renderTps() {
   fetch("/api/tps").then(function (r) { return r.json(); }).then(function (d) {
     var box = document.getElementById("tps");
@@ -349,9 +352,21 @@ function renderTps() {
       return;
     }
     var now = Date.now() / 1000;
-    var t0 = now - TPS_WINDOW_S;
+    // la finestra del grafico è QUELLA selezionata per l'elenco (5m…tutto):
+    // stesso pezzo di laboratorio, elenco e grafico raccontano la stessa cosa
+    var span;
+    if (WIN === "all") {
+      var oldest = pts.length ? pts[0].ts : now - 60;
+      rejs.forEach(function (p) { oldest = Math.min(oldest, p.ts); });
+      span = Math.max(60, now - oldest);
+    } else {
+      span = parseInt(WIN, 10) || 600;
+    }
+    var t0 = now - span;
     var win = pts.filter(function (p) { return p.ts >= t0; });
     var rj = rejs.filter(function (p) { return p.ts >= t0; });
+    // fasce che si adattano alla larghezza: da 30 s in su, sempre ≤ ~40 punti
+    var bucketS = Math.max(TPS_MIN_BUCKET_S, Math.ceil(span / 900) * 30);
     var tpsVals = win.map(function (p) { return p.tps; }).sort(function (a, b) { return a - b; });
     var maxT = tpsVals[tpsVals.length - 1] || 1;
     var avgWin = tpsVals.length
@@ -362,7 +377,7 @@ function renderTps() {
     // margini: sinistra per i tick Y, sotto per gli orari
     var W = 600, H = 96, ML = 42, MR = 8, MT = 8, MB = 16;
     var plotW = W - ML - MR, plotH = H - MT - MB;
-    var xAt = function (ts) { return ML + ((ts - t0) / TPS_WINDOW_S) * plotW; };
+    var xAt = function (ts) { return ML + ((ts - t0) / span) * plotW; };
     var yAt = function (v) { return MT + plotH - (v / top) * plotH; };
     var svg = document.createElementNS(TPS_NS, "svg");
     svg.setAttribute("viewBox", "0 0 " + W + " " + H);
@@ -405,12 +420,12 @@ function renderTps() {
     });
     var tip = document.getElementById("tpstip");
     if (win.length) {
-      // DUE LINEE, non il punta-punta di ogni chat: per fascia di TPS_BUCKET_S
+      // DUE LINEE, non il punta-punta di ogni chat: per fascia di bucketS
       // la media (il ritmo medio che il ragazzo sperimenta) e il minimo (la
       // peggiore). Il degrado si legge come pendenza, non come rumore di punti.
       var buckets = {};
       win.forEach(function (p) {
-        var b = Math.floor((p.ts - t0) / TPS_BUCKET_S);
+        var b = Math.floor((p.ts - t0) / bucketS);
         (buckets[b] = buckets[b] || []).push(p);
       });
       var idxs = Object.keys(buckets).map(Number).sort(function (a, b2) { return a - b2; });
@@ -427,13 +442,13 @@ function renderTps() {
         };
         idxs.forEach(function (b, k) {
           if (k > 0 && b !== idxs[k - 1] + 1) flush();  // fascia vuota: niente pendii inventati
-          var px = xAt(t0 + (b + 0.5) * TPS_BUCKET_S);  // punto a centro fascia
+          var px = xAt(t0 + (b + 0.5) * bucketS);  // punto a centro fascia
           var py = yAt(pick(buckets[b]));
           run.push([px, py]);
           var c = el("circle", { cx: px.toFixed(1), cy: py.toFixed(1), r: 3,
             fill: color, stroke: "transparent", "stroke-width": 6 });
           c.addEventListener("mouseenter", function () {
-            tip.textContent = hhmm(t0 + b * TPS_BUCKET_S) + " · " + label + " " +
+            tip.textContent = hhmm(t0 + b * bucketS) + " · " + label + " " +
               pick(buckets[b]).toFixed(1) + " t/s · " + buckets[b].length + " chat";
             tip.hidden = false;
           });
@@ -465,13 +480,15 @@ function renderTps() {
       // finestra vuota: il tempo che avanza senza chat è informazione, non buco
       svg.appendChild(el("text", { x: (ML + W - MR) / 2, y: MT + plotH / 2,
         "font-size": 10, "text-anchor": "middle", fill: "var(--dim)" },
-        "nessuna chat negli ultimi 10 min" +
+        "nessuna chat nella finestra (" + winLabel() + ")" +
         (pts.length ? " · ultima " + hhmm(pts[pts.length - 1].ts) : "")));
     }
     box.innerHTML = "";
+    var bucketLbl = bucketS < 60 ? bucketS + " s" : (bucketS / 60) + " min";
     var lbl = document.createElement("div");
-    lbl.textContent = "token/s (visti dal gateway) · ultimi 10 min · media e minimo per fasce da " +
-      TPS_BUCKET_S + " s · media finestra " + avgWin.toFixed(1) +
+    lbl.textContent = "token/s (visti dal gateway) · " + winLabel() +
+      " · media e minimo per fasce da " + bucketLbl +
+      " · media finestra " + avgWin.toFixed(1) +
       " · " + win.length + " chat · 429: " + rj.length +
       (win.length ? " — passa sopra i punti" : "");
     box.appendChild(svg);

@@ -500,12 +500,14 @@ function loadConsumi() {
         "<table>" +
         "<tr><th></th><th class='loc'><svg class='ic' aria-hidden='true'><use href='#i-pc' xlink:href='#i-pc'/></svg> Qui, sul mini PC</th>" +
         "<th class='front'><svg class='ic' aria-hidden='true'><use href='#i-cloud' xlink:href='#i-cloud'/></svg> Su " + testoSicuro(d.frontiera.modello) + "</th></tr>" +
-        "<tr><th>Energia</th><td class='loc'>" + d.locale.kwh + " kWh</td>" +
-        "<td class='front'>" + d.frontiera.kwh + " kWh</td></tr>" +
+        // numeri a decimali FISSI: il float grezzo per consumi piccoli arriva
+        // in notazione scientifica (9.7e-06) — illeggibile per un ragazzo
+        "<tr><th>Energia</th><td class='loc'>" + d.locale.kwh.toFixed(4) + " kWh</td>" +
+        "<td class='front'>" + d.frontiera.kwh.toFixed(4) + " kWh</td></tr>" +
         "<tr><th>Acqua</th><td class='loc'>≈ 0 L (calcola nel locale)</td>" +
-        "<td class='front'><svg class='ic' aria-hidden='true'><use href='#i-drop' xlink:href='#i-drop'/></svg> " + d.frontiera.acqua_l + " L</td></tr>" +
-        "<tr><th>Costo</th><td class='loc'>€ " + d.locale.euro + " (luce)</td>" +
-        "<td class='front'>€ " + d.frontiera.euro + " (API)</td></tr>" +
+        "<td class='front'><svg class='ic' aria-hidden='true'><use href='#i-drop' xlink:href='#i-drop'/></svg> " + d.frontiera.acqua_l.toFixed(6) + " L</td></tr>" +
+        "<tr><th>Costo</th><td class='loc'>€ " + d.locale.euro.toFixed(6) + " (luce)</td>" +
+        "<td class='front'>€ " + d.frontiera.euro.toFixed(4) + " (API)</td></tr>" +
         "</table>";
     }).catch(function () { document.getElementById("consumi").hidden = true; });
 }

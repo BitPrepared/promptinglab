@@ -1094,19 +1094,31 @@ class AdminPageTest(unittest.TestCase):
         sotto 429 proprio quando serviva vederlo muovere. Ora la finestra è
         temporale e ancorata a «adesso»: scorre a ogni tick."""
         body = self._read()
-        self.assertIn("TPS_WINDOW_S", body)          # finestra temporale
         self.assertIn("Date.now()", body)            # ancorata a «adesso»
         self.assertIn("adesso", body)                # etichetta del bordo destro
-        self.assertIn("nessuna chat negli ultimi", body)  # finestra vuota visibile
+        self.assertIn("nessuna chat nella finestra", body)  # finestra vuota visibile
         # niente più posizionamento a indice: il punto sta al suo posto nel tempo
         self.assertNotIn("xAt(i)", body)
+
+    def test_tps_chart_follows_window_selection(self) -> None:
+        """Richiesta dell'educatore: il grafico deve seguire la finestra scelta
+        per l'elenco (5m/10m/15m/30m/tutto), non avere una larghezza propria:
+        elenco e grafico raccontano lo stesso pezzo di laboratorio."""
+        import re
+        body = self._read()
+        m = re.search(r"function setWindow[\s\S]{0,300}", body)
+        self.assertIsNotNone(m, "setWindow non trovata")
+        self.assertIn("renderTps", m.group(0))       # la selezione ridisegna subito
+        self.assertIn("parseInt(WIN", body)          # la larghezza viene da WIN
+        self.assertIn('"all"', body)                 # «tutto» = dal dato più vecchio
+        self.assertIn("TPS_MIN_BUCKET_S", body)      # fasce che si adattano alla larghezza
 
     def test_tps_chart_aggregates_avg_and_min(self) -> None:
         """Richiesta dell'educatore: niente punta-punta di TUTTE le chat raccolte
         (sotto loadtest è rumore) — due linee per fascia temporale, la media e
         il minimo, con legenda."""
         body = self._read()
-        self.assertIn("TPS_BUCKET_S", body)          # aggregazione per fascia
+        self.assertIn("bucketS", body)               # aggregazione per fascia
         self.assertIn('"media"', body)               # le due serie
         self.assertIn('"minimo"', body)
         self.assertIn("Math.min", body)              # il minimo è davvero il minimo
@@ -1688,6 +1700,12 @@ class SkillWorkflowPageTest(unittest.TestCase):
         self.assertIn("Acqua", body)
         self.assertIn("Costo", body)
         self.assertIn("kwh", body)               # ...anche per la frontiera
+        # decimali FISSI al rendering: il float grezzo per consumi piccoli
+        # arriverebbe in notazione scientifica (9.7e-06) — illeggibile.
+        # Energia a 4 cifre (richiesta dell'educatore), € e acqua come il backend
+        self.assertIn("kwh.toFixed(4)", body)
+        self.assertIn("acqua_l.toFixed(6)", body)
+        self.assertIn("euro.toFixed(6)", body)
 
     def test_every_js_id_exists_in_markup(self) -> None:
         """Regressione: rinominare un id nel markup (tb4 -> tb5) senza aggiornare
