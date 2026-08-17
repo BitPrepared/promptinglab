@@ -19,6 +19,11 @@ statico (quello è compito di nginx, che fa anche da reverse proxy same-origin):
 Route (solo /api/* — tutto il resto è 404 JSON):
   GET  /api/health             -> proxy a skill /health
   GET  /api/model-status       -> {model_active, model?, clients} (sempre 200)
+  GET  /api/tps                -> serie globale token/s delle chat recenti
+                                  (ritmo VISTO dal gateway: round-trip incluso)
+  GET  /api/consumi/<cid>      -> stime didattiche locale vs frontiera per la
+                                  sessione (backend/costi.py; senza token:
+                                  has_tokens=false)
   GET  /api/sessions           -> elenco sessioni; ?window=<sec>|all (clamp
                                   [60,86400], default LAB_ACTIVE_WINDOW) e
                                   ?ip=<addr> filtro sull'insieme degli IP visti
@@ -56,6 +61,8 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs
 
+from backend.costi import stima as _stima_consumi
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 SKILL_URL = os.environ.get("SKILL_URL", "http://localhost:8080").rstrip("/")
 LLAMA_URL = os.environ.get("LLAMA_URL", "http://localhost:8081").rstrip("/")
@@ -76,6 +83,16 @@ _CHAT_MAX_TOKENS_CEILING = 768
 # genera codice HTML/CSS e il default basso la taglia a metà tag — la skill ha
 # già misurato che servono 768 (nemmeno 512 bastavano al suo JSON pretty-print).
 _CHAT_STEP_MAX_TOKENS = {"5": 768}
+# Backpressure (revisione 11): se la mediana delle ultime chat scende sotto
+# questa cadenza (token/s visti dal gateway), le nuove arrivano 429 con
+# retry_after — il client avvisa il ragazzo e riprova da solo. Mai a freddo:
+# servono almeno _CHAT_TPS_WINDOW osservazioni.
+_CHAT_TPS_FLOOR = 10.0
+_CHAT_TPS_WINDOW = 5
+_CHAT_RETRY_AFTER_S = 10
+# i punti più vecchi di così non contano: senza ricambio (429 non produce
+# punti) il cancello si riapre da solo e una chat di prova rifresca la finestra
+_CHAT_TPS_MAX_AGE_S = 120.0
 _ROLE_OK = ("system", "user", "assistant")
 
 _MODEL_CACHE: dict = {"name": None, "ts": 0.0}
@@ -83,6 +100,19 @@ _MODEL_CACHE: dict = {"name": None, "ts": 0.0}
 
 def _clamp(v, lo, hi):
     return lo if v < lo else hi if v > hi else v
+
+
+def _overloaded(points: list[dict]) -> bool:
+    """True se la mediana dei token/s RECENTI è sotto il pavimento: accodare
+    altre richieste peggiorerebbe l'attesa di tutti — meglio un 429 onesto.
+    I punti oltre _CHAT_TPS_MAX_AGE_S non contano (self-healing: i 429 non
+    producono punti, senza ricambio il cancello si riapre)."""
+    now = time.time()
+    fresh = [p["tps"] for p in points if now - p["ts"] <= _CHAT_TPS_MAX_AGE_S]
+    if len(fresh) < 3:
+        return False  # a freddo (o osservazioni stale) mai backpressure
+    fresh.sort()
+    return fresh[len(fresh) // 2] < _CHAT_TPS_FLOOR
 
 
 def _normalize_chat_body(client: dict, step: str | None = None) -> tuple[dict | None, str | None]:
@@ -144,7 +174,8 @@ def _llama_model_name() -> str | None:
 
 
 _ROW_COLS = ("ts", "client", "ip", "kind", "step", "status",
-             "in_len", "out_len", "ms", "in", "out", "turns")
+             "in_len", "out_len", "ms", "in", "out", "turns",
+             "tok_in", "tok_out")
 _ROW_SQL = ",".join(f'"{c}"' for c in _ROW_COLS)
 
 
@@ -178,11 +209,14 @@ class SessionTracker:
                     "CREATE TABLE IF NOT EXISTS interactions ("
                     "ts REAL, client TEXT, ip TEXT, kind TEXT, step TEXT, "
                     "status INTEGER, in_len INTEGER, out_len INTEGER, ms INTEGER, "
-                    '"in" TEXT, "out" TEXT, turns INTEGER, req TEXT, resp TEXT)')
-                for col_ddl in (  # DB creato prima del change trace-llm
+                    '"in" TEXT, "out" TEXT, turns INTEGER, req TEXT, resp TEXT, '
+                    "tok_in INTEGER, tok_out INTEGER)")
+                for col_ddl in (  # migrazioni per DB creati dai change precedenti
                         "ALTER TABLE interactions ADD COLUMN turns INTEGER",
                         "ALTER TABLE interactions ADD COLUMN req TEXT",
-                        "ALTER TABLE interactions ADD COLUMN resp TEXT"):
+                        "ALTER TABLE interactions ADD COLUMN resp TEXT",
+                        "ALTER TABLE interactions ADD COLUMN tok_in INTEGER",
+                        "ALTER TABLE interactions ADD COLUMN tok_out INTEGER"):
                     try:
                         self._db.execute(col_ddl)
                     except sqlite3.OperationalError:
@@ -220,7 +254,8 @@ class SessionTracker:
                in_len: int, out_len: int, ms: float,
                in_text: str | None = None, out_text: str | None = None,
                ip: str | None = None, turns: int | None = None,
-               trace: dict | None = None) -> None:
+               trace: dict | None = None,
+               tok_in: int | None = None, tok_out: int | None = None) -> None:
         ts = time.time()
         with self._lock:
             s = self._sessions.setdefault(
@@ -234,7 +269,10 @@ class SessionTracker:
                 s["ips"].add(ip)
                 s["last_ip"] = ip
             row = {"ts": ts, "client": cid, "ip": ip, "kind": kind, "step": step,
-                   "status": status, "in_len": in_len, "out_len": out_len, "ms": int(ms)}
+                   "status": status, "in_len": in_len, "out_len": out_len,
+                   # ms con un decimale: il fake in test risponde sub-ms e il
+                   # trunc a int lo azzerava (consumi/tps ne hanno bisogno)
+                   "ms": round(ms, 1)}
             # contenuti completi, sempre (design D3: a delta, non a storia)
             if in_text is not None:
                 row["in"] = in_text
@@ -246,6 +284,12 @@ class SessionTracker:
             # stripping (has_trace), il dettaglio la serve intera (design D4)
             if trace is not None:
                 row["trace"] = trace
+            # token del modello quando li espone (change readme-loadtest-consumi):
+            # base del grafico token/s
+            if tok_in is not None:
+                row["tok_in"] = tok_in
+            if tok_out is not None:
+                row["tok_out"] = tok_out
             s["recent"].append(row)  # niente cap: lo storico non si tronca
             # write-through dentro il lock (D7): memoria e DB coerenti
             if self._db:
@@ -272,6 +316,19 @@ class SessionTracker:
         out.sort(key=lambda x: x["last_seen"], reverse=True)
         return {"active": out, "total": len(out)}
 
+    def consumi(self, cid: str) -> dict | None:
+        """Aggregati di consumo della sessione per le stime didattiche:
+        token totali e secondi di elaborazione (somma dei round-trip)."""
+        with self._lock:
+            s = self._sessions.get(cid)
+            if not s:
+                return None
+            tok_in = sum(r.get("tok_in") or 0 for r in s["recent"])
+            tok_out = sum(r.get("tok_out") or 0 for r in s["recent"])
+            secs = sum(r.get("ms") or 0 for r in s["recent"]) / 1000.0
+        return {"tok_in": tok_in, "tok_out": tok_out, "secondi": secs,
+                "has_tokens": tok_in > 0 or tok_out > 0}
+
     def timeline(self, cid: str) -> dict:
         with self._lock:
             s = self._sessions.get(cid)
@@ -293,6 +350,25 @@ class SessionTracker:
                 if abs(row["ts"] - ts) < 1e-6:
                     return dict(row)
         return None
+
+    def tps_points(self, limit: int = 200) -> dict:
+        """Serie globale del ritmo di generazione (change readme-loadtest-consumi,
+        design D3): tokens/s VISTI DAL GATEWAY — tok_out diviso il tempo di
+        round-trip, attesa e coda incluse. Non è il benchmark puro del modello:
+        è il ritmo che il ragazzo sperimenta, che è la lezione."""
+        with self._lock:
+            pts = []
+            for cid, s in self._sessions.items():
+                for row in s["recent"]:
+                    tok_out, ms = row.get("tok_out"), row.get("ms")
+                    if row.get("kind") != "chat" or not tok_out or not ms:
+                        continue
+                    pts.append({"ts": row["ts"], "client": cid,
+                                "tok_in": row.get("tok_in"), "tok_out": tok_out,
+                                "ms": ms,
+                                "tps": round(tok_out / (ms / 1000.0), 1)})
+            pts.sort(key=lambda p: p["ts"])
+            return {"points": pts[-limit:]}
 
 
 _TRACKER = SessionTracker(os.path.join(LAB_SESSIONS_DIR, "sessions.db"))
@@ -345,11 +421,13 @@ class Handler(BaseHTTPRequestHandler):
                             ms, in_text=self._meta.get("in_text"),
                             out_text=self._meta.get("out_text"), ip=self._ip,
                             turns=self._meta.get("turns"),
-                            trace=self._meta.get("trace"))
+                            trace=self._meta.get("trace"),
+                            tok_in=self._meta.get("tok_in"),
+                            tok_out=self._meta.get("tok_out"))
 
-    def _send_json(self, code: int, obj: dict) -> None:
+    def _send_json(self, code: int, obj: dict, extra: dict | None = None) -> None:
         self._send(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"),
-                   "application/json; charset=utf-8")
+                   "application/json; charset=utf-8", extra)
 
     # --- proxy verso il servizio skill ------------------------------------
     def _proxy(self, method: str, skill_path: str, body: bytes | None = None) -> None:
@@ -390,11 +468,20 @@ class Handler(BaseHTTPRequestHandler):
             # pattern events): il gateway la raccoglie per la persistenza,
             # il pass-through verso la pagina è già trasparente
             try:
-                tr = json.loads(data.decode("utf-8", "replace")).get("trace")
+                extra = json.loads(data.decode("utf-8", "replace"))
             except (json.JSONDecodeError, AttributeError):
-                tr = None
+                extra = {}
+            tr = extra.get("trace") if isinstance(extra, dict) else None
             if isinstance(tr, dict):
                 self._meta["trace"] = tr
+            # anche lo scaffold conta nei consumi: la skill espone già gli
+            # usage (campo opzionale) — si raccolgono come per le chat
+            u = extra.get("usage") if isinstance(extra, dict) else None
+            if isinstance(u, dict):
+                for src, dst in (("prompt_tokens", "tok_in"),
+                                 ("completion_tokens", "tok_out")):
+                    if isinstance(u.get(src), int):
+                        self._meta[dst] = u[src]
         self._send(200, data, ctype)
 
     # --- bridge chat verso llama-server (tappe 1/2/4) ---------------------
@@ -427,6 +514,17 @@ class Handler(BaseHTTPRequestHandler):
                       "in_text": last_user or None, "turns": len(body["messages"])}
 
         data = json.dumps(body).encode("utf-8")
+        # backpressure: modello già in affanno → 429 con retry_after invece di
+        # accodare un'altra attesa (il client avvisa il ragazzo e riprova)
+        if _overloaded(_TRACKER.tps_points(_CHAT_TPS_WINDOW)["points"]):
+            self._send_json(
+                429,
+                {"error": "laboratorio sovraccarico: il modello risponde troppo "
+                          "lentamente, riprovo io tra poco",
+                 "model_active": True, "overload": True,
+                 "retry_after": _CHAT_RETRY_AFTER_S},
+                extra={"Retry-After": str(_CHAT_RETRY_AFTER_S)})
+            return
         req = urllib.request.Request(
             LLAMA_URL + "/v1/chat/completions", data=data,
             headers={"Content-Type": "application/json"}, method="POST")
@@ -462,6 +560,12 @@ class Handler(BaseHTTPRequestHandler):
         # inoltrati invariati: alimentano contatore di contesto e nota «tagliata
         # dal limite» della pagina — il gateway non li interpreta
         usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else None
+        # token per il grafico token/s (se il modello li espone)
+        if self._meta and usage:
+            for src, dst in (("prompt_tokens", "tok_in"),
+                             ("completion_tokens", "tok_out")):
+                if isinstance(usage.get(src), int):
+                    self._meta[dst] = usage[src]
         try:
             finish = payload["choices"][0].get("finish_reason")
         except (KeyError, TypeError, AttributeError):
@@ -509,6 +613,22 @@ class Handler(BaseHTTPRequestHandler):
     def _session_timeline(self, cid: str) -> None:
         self._send_json(200, _TRACKER.timeline(cid))
 
+    def _consumi(self, cid: str) -> None:
+        """GET /api/consumi/<cid>: stime didattiche locale vs frontiera
+        (change readme-loadtest-consumi, design D5). Senza token registrati
+        niente numeri: `has_tokens: false` e il pannello nasconde il riquadro."""
+        agg = _TRACKER.consumi(cid)
+        if agg is None:
+            self._send_json(404, {"error": "not found"})
+            return
+        if not agg["has_tokens"]:
+            self._send_json(200, {"client": cid, "has_tokens": False})
+            return
+        out = dict(_stima_consumi(agg["tok_in"], agg["tok_out"], agg["secondi"]))
+        out["client"] = cid
+        out["has_tokens"] = True
+        self._send_json(200, out)
+
     # --- routing (SOLO /api/*: il resto è del tier statico, qui 404) ------
     def do_GET(self) -> None:  # noqa: N802 - signature stdlib
         self._begin()
@@ -518,6 +638,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/model-status":
             self._model_status()
+            return
+        if path == "/api/tps":
+            self._send_json(200, _TRACKER.tps_points())
+            return
+        if path.startswith("/api/consumi/"):
+            self._consumi(path[len("/api/consumi/"):])
             return
         if path == "/api/sessions":
             self._sessions_list(query)

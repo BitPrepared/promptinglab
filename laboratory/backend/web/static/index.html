@@ -53,6 +53,17 @@
   #model-banner.warn { border-color: var(--warn); color: var(--warn); }
   #model-banner.check { color: var(--dim); }
 
+  /* Costo della sessione (change readme-loadtest-consumi): la lezione sta
+   * qui, davanti al ragazzo — non nel pannello dell'educatore. */
+  #consumi { margin-top: 6px; font-size: .86rem; color: var(--dim);
+    border: 1px dashed var(--line, #2a2f3a); border-radius: 8px; padding: 6px 10px; }
+  #consumi table { border-collapse: collapse; width: 100%; }
+  #consumi th, #consumi td { padding: 3px 8px; text-align: left; }
+  #consumi th { color: var(--dim); font-weight: 600; font-size: .8rem; }
+  #consumi td { border-top: 1px solid var(--line, #2a2f3a); }
+  #consumi th.loc, #consumi td.loc { color: var(--accent, #6ea8fe); }
+  #consumi th.front, #consumi td.front { color: var(--warn, #ffce6b); }
+
   /* --- Step + teoria --------------------------------------------------- */
   .step { display: none; }
   .step.active { display: block; animation: pop .2s ease; }
@@ -170,6 +181,7 @@
     border-radius: 6px; font: 0.72rem ui-monospace,Menlo,Consolas,monospace;
     padding: 0 5px; margin-left: 8px; cursor: pointer; vertical-align: middle; }
   .trace-btn:hover { color: var(--accent, #6ea8fe); border-color: var(--accent, #6ea8fe); }
+  .chat-ms { margin-left: 6px; color: var(--dim, #9aa0aa); font-size: .78rem; }
   .tracemod { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: flex;
     align-items: center; justify-content: center; z-index: 60; }
   .tracemod .box { background: #171a21; color: #e8eaed; border: 1px solid #2a2f3a;
@@ -214,6 +226,8 @@
 
   <!-- Banner stato modello -->
   <div id="model-banner" class="check" role="status" aria-live="polite">Controllo del modello…</div>
+  <!-- Costo della sessione del ragazzo: locale vs modello di frontiera -->
+  <div id="consumi" hidden></div>
 
   <!-- ============ STEP 1 — CONTEXT INJECTION (due tab: con/senza memoria) -->
   <section class="step" data-step="0">
@@ -431,6 +445,36 @@ document.querySelectorAll("[data-step-dot]").forEach(function (d) {
 document.getElementById("prev").addEventListener("click", function () { showStep(state.step - 1); });
 document.getElementById("next").addEventListener("click", function () { showStep(state.step + 1); });
 
+/* ============ Costo della tua sessione (change readme-loadtest-consumi) =====
+ * La lezione: qui, sul mini PC del campo, chattare costa frazioni di cent e
+ * non beve acqua; la stessa sessione su un modello di frontiera costa euro e
+ * litri anche per le domande semplici. Stime didattiche — costanti in
+ * backend/costi.py. Aggiornata dopo ogni risposta del modello. */
+function loadConsumi() {
+  fetch("/api/consumi/" + encodeURIComponent(CID))
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      var b = document.getElementById("consumi");
+      if (!d || !d.has_tokens) { b.hidden = true; return; }
+      b.hidden = false;
+      // forma tabellare: il confronto completo (energia, acqua, costo) si
+      // legge per righe, con entrambe le colonne a confronto
+      b.innerHTML =
+        "<b>🌍 Costo della tua sessione</b> <span>(" +
+        d.tok_out + " token generati, " + Math.round(d.secondi) + " s)</span>" +
+        "<table>" +
+        "<tr><th></th><th class='loc'>🖥 Qui, sul mini PC</th>" +
+        "<th class='front'>☁️ Su " + testoSicuro(d.frontiera.modello) + "</th></tr>" +
+        "<tr><th>Energia</th><td class='loc'>" + d.locale.kwh + " kWh</td>" +
+        "<td class='front'>" + d.frontiera.kwh + " kWh</td></tr>" +
+        "<tr><th>Acqua</th><td class='loc'>≈ 0 L (calcola nel locale)</td>" +
+        "<td class='front'>💧 " + d.frontiera.acqua_l + " L</td></tr>" +
+        "<tr><th>Costo</th><td class='loc'>€ " + d.locale.euro + " (luce)</td>" +
+        "<td class='front'>€ " + d.frontiera.euro + " (API)</td></tr>" +
+        "</table>";
+    }).catch(function () { document.getElementById("consumi").hidden = true; });
+}
+
 /* ============ Banner stato modello ============ */
 function renderBanner() {
   var b = document.getElementById("model-banner");
@@ -448,6 +492,9 @@ function renderBanner() {
 }
 function checkModel() {
   labFetch("/api/model-status", { method: "GET" }, null, 4000).then(function (res) {
+    loadConsumi();  // già presente in pagina se la sessione ha storia (persistita)
+    setInterval(loadConsumi, 5000);  // si muove anche senza risposte di chat
+                                         // (es. dopo lo scaffold della tappa ③)
     state.modelActive = !!res.body.model_active;
     state.modelName = res.body.model || null;
     state.clients = res.body.clients || 0;
@@ -496,6 +543,13 @@ function showTrace(trace) {
   mod.appendChild(box);
   mod.addEventListener("click", function (ev) { if (ev.target === mod) mod.remove(); });
   document.body.appendChild(mod);
+}
+function addTiming(host, ms) {
+  // tempo di risposta del turno, visto dal ragazzo (attesa/retry inclusi)
+  var s = document.createElement("span");
+  s.className = "chat-ms";
+  s.textContent = ms < 1000 ? Math.round(ms) + " ms" : (ms / 1000).toFixed(1) + " s";
+  host.appendChild(s);
 }
 function addTraceBtn(host, trace) {
   if (!trace) return;
@@ -586,10 +640,24 @@ function makeChat(root, opts) {
     // che può essere fissa (tappe ②③) o letta al volo (slider della ⑤)
     var tp = (typeof opts.temperature === "function") ? opts.temperature() : opts.temperature;
     if (tp != null) body.temperature = tp;
-    labFetch("/api/chat", { method: "POST", body: JSON.stringify(body) }, opts.step, 150000)
-    .then(function (res) {
-      spin.remove();
+    var t0 = Date.now();
+    var waiting429 = false;
+    function doPost(retried) {
+      labFetch("/api/chat", { method: "POST", body: JSON.stringify(body) }, opts.step, 150000)
+      .then(function (res) {
       var j = res.body || {};
+      // backpressure: il gateway dice di aspettare → avviso il ragazzo e
+      // riprovo io dopo retry_after (il turno non si perde)
+      if (res.status === 429 && j.overload && !retried) {
+        var ra = j.retry_after || 10;
+        waiting429 = true;
+        spin.textContent = "🚦 sovraccarico — riprovo tra " + ra + " s";
+        note("🚦 il laboratorio è sovraccarico: riprovo automaticamente tra " + ra + " s");
+        setTimeout(function () { waiting429 = false; doPost(true); }, ra * 1000);
+        return;
+      }
+      spin.remove();
+      var elapsedMs = Date.now() - t0;
       if (j.model_active === false) { bubble(null, "⚠️ " + (j.error || "modello non attivo"), "err"); setDisabled(true); state.modelActive = false; renderBanner(); return; }
       if (!res.ok || j.error) {
         var errTxt = String(j.error || ("errore " + res.status));
@@ -605,6 +673,7 @@ function makeChat(root, opts) {
       }
       hist.push({ role: "assistant", content: j.reply });
       var ia = bubble("assistant", j.reply);
+      addTiming(ia, elapsedMs);    // accanto a { }: quanto ha aspettato il ragazzo
       addTraceBtn(ia, j.trace);    // { }: request/response di QUESTO turno
       // badge ⚙ (tappa ③): la risposta è stata prodotta con la skill caricata
       if (opts.badge) {
@@ -624,12 +693,18 @@ function makeChat(root, opts) {
         note("✂️ risposta tagliata dal limite di " + maxOut + " token");
       }
       setTokens(j.usage ? j.usage.prompt_tokens : null);
+      loadConsumi();  // il costo della sessione cresce con ogni risposta
       if (opts.onHist) opts.onHist(hist);
       if (opts.onReply) opts.onReply(j.reply);
-    }).catch(function (err) {
-      spin.remove();
-      bubble(null, "⚠️ " + (err && err.message ? err.message : "errore di rete"), "err");
-    }).finally(function () { if (state.modelActive !== false) sendBtn.disabled = false; });
+      }).catch(function (err) {
+        spin.remove();
+        bubble(null, "⚠️ " + (err && err.message ? err.message : "errore di rete"), "err");
+      }).finally(function () {
+        // durante l'attesa da 429 il pulsante resta spento: il turno è in corso
+        if (!waiting429 && state.modelActive !== false) sendBtn.disabled = false;
+      });
+    }
+    doPost(false);
   }
   sendBtn.addEventListener("click", send);
   input.addEventListener("keydown", function (e) {

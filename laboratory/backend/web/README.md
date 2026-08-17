@@ -177,6 +177,8 @@ Per seguire cosa fanno i ragazzi collegati (e una persona in particolare):
 - **API**: `GET /api/sessions` (`?window=<sec>|all`, `?ip=<addr>`),
   `GET /api/sessions/<cid>` (timeline con contenuti e flag `has_trace`),
   `GET /api/sessions/<cid>/<ts>` (dettaglio con la trace LLM),
+  `GET /api/tps` (serie token/s per il grafico del pannello),
+  `GET /api/consumi/<cid>` (stime didattiche locale vs frontiera),
   `GET /api/model-status` (`{model_active, model?, clients}`).
 - **Storage sessioni** (supervisione a posteriori): ogni interazione → riga nel
   DB **sqlite3** `sessions/sessions.db` (volume bind `./sessions`), con metadati,

@@ -26,6 +26,10 @@
     border-radius:7px; padding:2px 9px; font-size:.82rem; cursor:pointer; }
   .wbtn:hover { border-color:var(--accent); }
   .wbtn.on { color:var(--ink); border-color:var(--accent); background:var(--panel); }
+  .ipin { background:var(--panel-2); color:var(--ink); border:1px solid var(--line);
+    border-radius:7px; padding:2px 8px; font-size:.82rem; width:130px;
+    font-family:ui-monospace,Menlo,Consolas,monospace; }
+  .ipin:focus { outline:none; border-color:var(--accent); }
   .chip { display:inline-block; background:var(--panel-2); border:1px solid var(--accent);
     color:var(--accent); border-radius:999px; padding:1px 9px; font-size:.8rem;
     margin-bottom:8px; cursor:pointer; font-family:ui-monospace,Menlo,Consolas,monospace; }
@@ -82,6 +86,13 @@
     font:0.78rem/1.45 ui-monospace,Menlo,Consolas,monospace; }
   .tracemod .x { float:right; background:none; border:0; color:var(--dim);
     font-size:1.1rem; cursor:pointer; }
+  /* grafico token/s (change readme-loadtest-consumi, D3) */
+  .tpsbox { border:1px solid var(--line); border-radius:8px; padding:8px 10px;
+    margin-bottom:10px; font-size:.8rem; color:var(--dim); position:relative; }
+  .tpsbox svg { width:100%; height:104px; display:block; }
+  .tpsbox .tt { position:fixed; background:var(--panel); border:1px solid var(--accent);
+    color:var(--ink); font-size:.75rem; padding:3px 7px; border-radius:6px;
+    pointer-events:none; z-index:50; font-family:ui-monospace,Menlo,Consolas,monospace; }
 </style>
 </head>
 <body>
@@ -99,12 +110,15 @@
       <button class="wbtn" data-w="900">15m</button>
       <button class="wbtn" data-w="1800">30m</button>
       <button class="wbtn" data-w="all">Tutto</button>
+      <input id="ipinput" class="ipin" type="text" placeholder="filtra per IP…"
+             title="scrivi un IP e premi Invio (vuoto + Invio = via il filtro)">
     </div>
     <div id="ipbar"></div>
     <div class="meta-top" id="count">—</div>
     <ul class="ulist" id="ulist"><li class="empty">caricamento…</li></ul>
   </div>
   <div class="col">
+    <div class="tpsbox" id="tps"><span class="empty">token/s: nessuna chat ancora</span><div class="tt" id="tpstip" hidden></div></div>
     <h2 id="tl-title">Timeline</h2>
     <div class="wbar" style="justify-content:flex-end">
       <button class="wbtn" id="tlview" type="button">Vista: conversazione</button>
@@ -151,6 +165,7 @@ function setIpFilter(ip) { IPF = (ip === IPF) ? null : ip; renderIpBar(); loadLi
 function renderIpBar() {
   var bar = document.getElementById("ipbar");
   bar.innerHTML = "";
+  document.getElementById("ipinput").value = IPF || "";  // input e chip in sync
   if (!IPF) return;
   var c = document.createElement("span");
   c.className = "chip";
@@ -303,6 +318,100 @@ function traceBtn(cid, ts) {
   return b;
 }
 
+/* ============ Grafico token/s (change readme-loadtest-consumi, D3) =========
+ * Serie globale delle chat recenti: tokens/secondo VISTI DAL GATEWAY (token
+ * generati diviso il round-trip, attesa e coda incluse). Non è il benchmark
+ * del modello: è il ritmo che il ragazzo sperimenta — e il degrado sotto
+ * carico (make loadtest) qui si vede. SVG disegnato a mano, zero librerie. */
+var TPS_NS = "http://www.w3.org/2000/svg";
+var TPS_FLOOR = 10;  // = _CHAT_TPS_FLOOR del gateway: target di backpressure
+                     // (il test li tiene sincroni)
+function renderTps() {
+  fetch("/api/tps").then(function (r) { return r.json(); }).then(function (d) {
+    var box = document.getElementById("tps");
+    var pts = (d && d.points) || [];
+    if (!pts.length) {
+      box.innerHTML = '<span class="empty">token/s: nessuna chat ancora</span>' +
+        '<div class="tt" id="tpstip" hidden></div>';
+      return;
+    }
+    var tpsVals = pts.map(function (p) { return p.tps; }).sort(function (a, b) { return a - b; });
+    var maxT = tpsVals[tpsVals.length - 1] || 1;
+    var med = tpsVals[Math.floor(tpsVals.length / 2)];
+    // la scala include SEMPRE il target: la linea rossa non sparisce mai
+    var top = Math.max(maxT, TPS_FLOOR);
+    // margini: sinistra per i tick Y, sotto per gli orari
+    var W = 600, H = 96, ML = 42, MR = 8, MT = 8, MB = 16;
+    var plotW = W - ML - MR, plotH = H - MT - MB;
+    var xAt = function (i) {
+      return ML + (pts.length === 1 ? plotW / 2 : (i / (pts.length - 1)) * plotW);
+    };
+    var yAt = function (v) { return MT + plotH - (v / top) * plotH; };
+    var svg = document.createElementNS(TPS_NS, "svg");
+    svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+    svg.setAttribute("preserveAspectRatio", "none");
+    var el = function (tag, attrs, txt) {
+      var e = document.createElementNS(TPS_NS, tag);
+      for (var k in attrs) e.setAttribute(k, attrs[k]);
+      if (txt != null) e.textContent = txt;
+      return e;
+    };
+    // griglia orizzontale tratteggiata + tick: l'unità viaggia col tick alto,
+    // non come etichetta staccata sopra l'asse
+    [0, top / 2, top].forEach(function (v, i) {
+      var y = yAt(v);
+      svg.appendChild(el("line", { x1: ML, x2: W - MR, y1: y, y2: y,
+        stroke: "var(--line)", "stroke-width": 1, "stroke-dasharray": "4 3" }));
+      var lbl = v.toFixed(1) + (i === 2 ? " t/s" : "");  // unità solo in cima
+      svg.appendChild(el("text", { x: 2, y: y + 3, "font-size": 9,
+        fill: "var(--dim)" }, lbl));
+    });
+    // il target di backpressure: linea rossa tratteggiata sul pavimento
+    var ry = yAt(TPS_FLOOR);
+    svg.appendChild(el("line", { x1: ML, x2: W - MR, y1: ry, y2: ry,
+      stroke: "#e5534b", "stroke-width": 1.5, "stroke-dasharray": "6 3" }));
+    svg.appendChild(el("text", { x: W - MR, y: ry - 3, "font-size": 9,
+      "text-anchor": "end", fill: "#e5534b" },
+      "target " + TPS_FLOOR + " t/s (backpressure)"));
+    // orari agli estremi della serie
+    var hhmm = function (ts) { return new Date(ts * 1000).toLocaleTimeString(); };
+    svg.appendChild(el("text", { x: ML, y: H - 3, "font-size": 9,
+      fill: "var(--dim)" }, hhmm(pts[0].ts)));
+    svg.appendChild(el("text", { x: W - MR, y: H - 3, "font-size": 9,
+      "text-anchor": "end", fill: "var(--dim)" }, hhmm(pts[pts.length - 1].ts)));
+    // la serie
+    svg.appendChild(el("polyline", { fill: "none", stroke: "var(--accent)",
+      "stroke-width": 2,
+      points: pts.map(function (p, i) {
+        return xAt(i).toFixed(1) + "," + yAt(p.tps).toFixed(1);
+      }).join(" ") }));
+    // punti con tooltip: valori puntuali al passaggio del mouse
+    var tip = document.getElementById("tpstip");
+    pts.forEach(function (p, i) {
+      var c = el("circle", { cx: xAt(i).toFixed(1), cy: yAt(p.tps).toFixed(1),
+        r: 3, fill: "var(--accent)", stroke: "transparent", "stroke-width": 6 });
+      c.addEventListener("mouseenter", function () {
+        tip.textContent = hhmm(p.ts) + " · " + p.client + " · " + p.tps +
+          " t/s · " + p.tok_out + " token in " + (p.ms / 1000).toFixed(1) + " s";
+        tip.hidden = false;
+      });
+      c.addEventListener("mousemove", function (ev) {
+        tip.style.left = (ev.clientX + 12) + "px";
+        tip.style.top = (ev.clientY - 26) + "px";
+      });
+      c.addEventListener("mouseleave", function () { tip.hidden = true; });
+      svg.appendChild(c);
+    });
+    box.innerHTML = "";
+    var lbl = document.createElement("div");
+    lbl.textContent = "token/s (visti dal gateway) · med " + med +
+      " · max " + maxT + " · " + pts.length + " chat — passa sopra i punti";
+    box.appendChild(svg);
+    box.appendChild(lbl);
+    box.appendChild(tip);  // il tooltip vive nel box (ricreato sopra)
+  }).catch(function () {});
+}
+
 function toggleView() {
   VIEW = (VIEW === "tl") ? "chat" : "tl";
   document.getElementById("tlview").textContent =
@@ -315,9 +424,18 @@ document.getElementById("wbar").addEventListener("click", function (ev) {
   if (t) setWindow(t.getAttribute("data-w"));
 });
 document.getElementById("tlview").addEventListener("click", toggleView);
+document.getElementById("ipinput").addEventListener("keydown", function (e) {
+  if (e.key === "Enter") {
+    var v = e.target.value.trim();
+    if (v) setIpFilter(v);
+    else if (IPF) { IPF = null; renderIpBar(); loadList(); }
+    e.target.blur();
+  }
+});
 setWindow(WIN);
 renderIpBar();
-setInterval(function () { loadList(); if (SEL) loadTimeline(SEL); }, TICK);
+renderTps();
+setInterval(function () { loadList(); renderTps(); if (SEL) loadTimeline(SEL); }, TICK);
 </script>
 </body>
 </html>

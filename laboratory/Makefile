@@ -16,9 +16,13 @@
 MODEL_FILE ?= qwen2.5-1.5b-instruct-q4_k_m.gguf
 COMPOSE     := docker compose
 PROFILE     := --profile model
+URL     ?= http://localhost:8090
+N       ?= 8
+TURNS   ?= 4
+RETRY   ?= 0
 
 .DEFAULT_GOAL := help
-.PHONY: help up pi-up demo down rebuild logs admin open status ps test clean clean-sessions pull
+.PHONY: help up pi-up demo down rebuild logs admin open status ps test clean clean-sessions loadtest pull
 
 help:  ## mostra questo aiuto
 	@echo "Laboratorio web — target disponibili:"
@@ -28,6 +32,7 @@ help:  ## mostra questo aiuto
 	@echo "  make rebuild   ricostruisce le immagini (codice Python) e riparte col modello"
 	@echo "  make down      ferma e rimuove tutti i container (anche llama)"
 	@echo "  make clean-sessions  azzera lo storico delle sessioni (ferma il gateway)"
+	@echo "  make loadtest   simula N ragazzi in chat (N=8 TURNS=4 URL=...)"
 	@echo "  make logs      tail dei log di tutti i service (segui un utente: grep '#<cid>')"
 	@echo "  make admin     URL del pannello educatore (sessions, finestra/filtro IP)"
 	@echo "  make open      URL della pagina laboratorio"
@@ -73,6 +78,9 @@ open:  ## URL della pagina laboratorio
 
 test:  ## suite di test
 	python3 -m unittest discover -s tests
+
+loadtest:  ## simula N ragazzi in chat (N=8 TURNS=4 RETRY=0 URL=http://localhost:8090)
+	python3 -m loadtest --url $(URL) --n $(N) --turns $(TURNS) --retry $(RETRY)
 
 clean:  ## ferma tutto + pulisce orfani e reti dangling (risolve 'network not found')
 	-$(COMPOSE) $(PROFILE) down --remove-orphans

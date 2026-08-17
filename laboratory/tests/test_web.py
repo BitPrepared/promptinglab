@@ -16,7 +16,9 @@ import contextlib
 import io
 import json
 import os
+import re
 import shutil
+import subprocess
 import tempfile
 import threading
 import time
@@ -249,8 +251,11 @@ class ChatBridgeTest(unittest.TestCase):
         self.llama_thread = threading.Thread(target=self.llama.serve_forever, daemon=True)
         self.llama_thread.start()
 
-        self._orig_llama_url = gateway.LLAMA_URL
+        self._orig = (gateway.LLAMA_URL, gateway._TRACKER)
         gateway.LLAMA_URL = self.llama_url
+        # tracker fresco per test: il modulo potrebbe avere nello storico punti
+        # token/s REALI (loadtest) che farebbero scattare la backpressure
+        gateway._TRACKER = gateway.SessionTracker(None)
         self.gw = ThreadingHTTPServer(("127.0.0.1", 0), gateway.Handler)
         self.gw_port = self.gw.server_address[1]
         self.gw_url = f"http://127.0.0.1:{self.gw_port}"
@@ -258,7 +263,7 @@ class ChatBridgeTest(unittest.TestCase):
         self.gw_thread.start()
 
     def tearDown(self) -> None:
-        gateway.LLAMA_URL = self._orig_llama_url
+        gateway.LLAMA_URL, gateway._TRACKER = self._orig
         self.gw.shutdown(); self.gw.server_close(); self.gw_thread.join(timeout=2)
         self.llama.shutdown(); self.llama.server_close(); self.llama_thread.join(timeout=2)
 
@@ -300,6 +305,122 @@ class ChatBridgeTest(unittest.TestCase):
                            {"messages": [{"role": "user", "content": "x"}], "max_tokens": 100},
                            {"X-Step": "5"})
         self.assertEqual(b3["trace"]["request"]["max_tokens"], 100)
+
+    def test_chat_tokens_recorded(self) -> None:
+        """Change readme-loadtest-consumi (D3): i token del modello (usage)
+        si registrano per riga e si persistono — base del grafico token/s."""
+        orig = gateway._TRACKER
+        tmp = tempfile.mkdtemp()
+        db = os.path.join(tmp, "s.db")
+        gateway._TRACKER = gateway.SessionTracker(db)
+        try:
+            _, body = self._post("/api/chat",
+                                 {"messages": [{"role": "user", "content": "uno"}]},
+                                 {"X-Client-Id": "tk"})
+            _wait_tracked("tk")
+            row = gateway._TRACKER.timeline("tk")["interactions"][0]
+            self.assertEqual(row["tok_in"], len("uno"))   # _fake_usage
+            self.assertEqual(row["tok_out"], len(CANNED_REPLY))
+            # round-trip di persistenza (ALTER TABLE per DB esistenti incluso)
+            t2 = gateway.SessionTracker(db)
+            self.assertEqual(t2.timeline("tk")["interactions"][0]["tok_out"],
+                             len(CANNED_REPLY))
+        finally:
+            gateway._TRACKER = orig
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_tps_endpoint(self) -> None:
+        """GET /api/tps: la serie globale del ritmo di generazione (tok_out/ms)
+        vista dal gateway — il degrado sotto carico si vede qui."""
+        orig = gateway._TRACKER
+        tmp = tempfile.mkdtemp()
+        gateway._TRACKER = gateway.SessionTracker(os.path.join(tmp, "s.db"))
+        try:
+            for cid in ("a", "b"):
+                self._post("/api/chat",
+                           {"messages": [{"role": "user", "content": "ciao"}]},
+                           {"X-Client-Id": cid})
+                _wait_tracked(cid)
+            status, body = self._get("/api/tps")
+        finally:
+            gateway._TRACKER = orig
+            shutil.rmtree(tmp, ignore_errors=True)
+        self.assertEqual(status, 200)
+        pts = body["points"]
+        self.assertEqual(len(pts), 2)
+        for p in pts:
+            self.assertEqual(p["tok_out"], len(CANNED_REPLY))
+            self.assertGreater(p["tps"], 0)  # tok_out / (ms/1000)
+            self.assertIn(p["client"], ("a", "b"))
+
+    def test_consumi_endpoint(self) -> None:
+        """GET /api/consumi/<cid> (change readme-loadtest-consumi, D5): stime
+        locale vs frontiera sui token effettivi della sessione."""
+        orig = gateway._TRACKER
+        tmp = tempfile.mkdtemp()
+        gateway._TRACKER = gateway.SessionTracker(os.path.join(tmp, "s.db"))
+        try:
+            self._post("/api/chat",
+                       {"messages": [{"role": "user", "content": "ciao"}]},
+                       {"X-Client-Id": "eco"})
+            _wait_tracked("eco")
+            status, body = self._get("/api/consumi/eco")
+            self.assertEqual(status, 200)
+            self.assertTrue(body["has_tokens"])
+            self.assertGreater(body["tok_out"], 0)
+            self.assertGreater(body["frontiera"]["euro"], 0.0)
+            self.assertGreater(body["frontiera"]["acqua_l"], 0.0)
+            self.assertGreater(body["locale"]["kwh"], 0.0)
+            status, _ = self._get("/api/consumi/inesistente")
+            self.assertEqual(status, 404)
+        finally:
+            gateway._TRACKER = orig
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_chat_429_when_overloaded(self) -> None:
+        """Backpressure (revisione 11): con le ultime chat sotto la soglia
+        token/s il gateway risponde 429 con retry_after invece di accodarsi."""
+        orig = gateway._TRACKER
+        tmp = tempfile.mkdtemp()
+        slow = gateway.SessionTracker(os.path.join(tmp, "slow.db"))
+        for _ in range(5):  # tps = 5 token / 5 s = 1 t/s: sotto il pavimento
+            slow.record("slow", "chat", "1", 200, 1, 1, 5000.0,
+                        tok_in=1, tok_out=5)
+        gateway._TRACKER = slow
+        try:
+            status, body = self._post("/api/chat",
+                                      {"messages": [{"role": "user", "content": "ciao"}]})
+        finally:
+            gateway._TRACKER = orig
+            shutil.rmtree(tmp, ignore_errors=True)
+        self.assertEqual(status, 429)
+        self.assertTrue(body["overload"])
+        self.assertEqual(body["retry_after"], 10)
+        self.assertIn("sovraccarico", body["error"])
+
+    def test_chat_ok_when_tps_healthy(self) -> None:
+        """Con cadenza sana niente 429: il meccanismo scatta solo sul degrado
+        (e mai a freddo, con poche osservazioni)."""
+        orig = gateway._TRACKER
+        tmp = tempfile.mkdtemp()
+        fast = gateway.SessionTracker(os.path.join(tmp, "fast.db"))
+        for _ in range(5):  # 50 token in 100 ms = 500 t/s
+            fast.record("fast", "chat", "1", 200, 1, 1, 100.0,
+                        tok_in=1, tok_out=50)
+        gateway._TRACKER = fast
+        try:
+            status, body = self._post("/api/chat",
+                                      {"messages": [{"role": "user", "content": "ciao"}]})
+            self.assertEqual(status, 200)
+            self.assertIn("reply", body)
+            # a freddo (nessuna osservazione recente) mai 429
+            gateway._TRACKER = gateway.SessionTracker(os.path.join(tmp, "cold.db"))
+            status, _ = self._post("/api/chat",
+                                   {"messages": [{"role": "user", "content": "ciao"}]})
+            self.assertEqual(status, 200)
+        finally:
+            gateway._TRACKER = orig
+            shutil.rmtree(tmp, ignore_errors=True)
 
     def test_chat_response_includes_trace(self) -> None:
         """Change trace-llm (D1/D3): la risposta porta sempre la trace — il body
@@ -667,6 +788,61 @@ class ObservabilityTest(unittest.TestCase):
         _, body = self._get("/api/sessions")
         self.assertEqual(body["active"][0]["last_ip"], "127.0.0.1")
 
+    def test_consumi_without_tokens_hidden(self) -> None:
+        """Revisione: lo scaffold CON usage conta (anche mock: la tabella si
+        muove in tappa ③). Il riquadro resta nascosto solo quando non c'è
+        stata chiamata con usage — es. il percorso onboarding della skill."""
+        self._post("/api/scaffold", {"notes": NOTES}, {"X-Client-Id": "sk"})
+        self._wait_session("sk")
+        status, body = self._get("/api/consumi/sk")
+        self.assertEqual(status, 200)
+        self.assertTrue(body["has_tokens"])  # usage raccolto anche dallo scaffold
+        # onboarding («ciao?»): risposta senza modello, niente usage, niente tabella
+        self._post("/api/scaffold", {"notes": "ciao?"}, {"X-Client-Id": "onb"})
+        self._wait_session("onb")
+        status, body = self._get("/api/consumi/onb")
+        self.assertEqual(status, 200)
+        self.assertFalse(body["has_tokens"])
+
+    def test_scaffold_usage_tokens_recorded(self) -> None:
+        """Revisione: anche lo scaffold conta nei consumi — il gateway raccoglie
+        gli usage che la skill già restituisce (campo opzionale), così la
+        tabella del ragazzo si muove anche usando la tappa ③."""
+        body_out = {"scaffold": {}, "usage": {"prompt_tokens": 543, "completion_tokens": 210}}
+
+        class FakeSkill(BaseHTTPRequestHandler):
+            def do_POST(self):  # noqa: N802
+                n = int(self.headers.get("Content-Length") or 0)
+                self.rfile.read(n)
+                b = json.dumps(body_out).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(b)))
+                self.end_headers()
+                self.wfile.write(b)
+
+            def log_message(self, fmt, *args):  # silenzioso
+                pass
+
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), FakeSkill)
+        st = threading.Thread(target=srv.serve_forever, daemon=True)
+        st.start()
+        orig = gateway.SKILL_URL
+        gateway.SKILL_URL = f"http://127.0.0.1:{srv.server_address[1]}"
+        try:
+            self._post("/api/scaffold", {"notes": NOTES}, {"X-Client-Id": "us"})
+        finally:
+            gateway.SKILL_URL = orig
+            srv.shutdown(); srv.server_close(); st.join(timeout=2)
+        self._wait_session("us")
+        row = gateway._TRACKER.timeline("us")["interactions"][0]
+        self.assertEqual(row["tok_in"], 543)
+        self.assertEqual(row["tok_out"], 210)
+        # e quindi entra nei consumi della sessione
+        agg = gateway._TRACKER.consumi("us")
+        self.assertTrue(agg["has_tokens"])
+        self.assertEqual(agg["tok_out"], 210)
+
     def test_scaffold_trace_passthrough_and_persisted(self) -> None:
         """Il campo `trace` della skill passa invariato alla pagina (proxy
         trasparente) e viene persistito per il pannello (change trace-llm)."""
@@ -829,6 +1005,50 @@ class AdminPageTest(unittest.TestCase):
         self.assertIn("OPEN[key]", body)       # riapplicata quando si ricostruisce
         self.assertIn("delete OPEN[key]", body)  # toggle al click
 
+    def test_tps_chart(self) -> None:
+        """Grafico token/s nel pannello (change readme-loadtest-consumi, D3):
+        SVG disegnato a mano, zero librerie, ritmo visto dal gateway."""
+        body = self._read()
+        self.assertIn('id="tps"', body)   # il box del grafico
+        self.assertIn("renderTps", body)  # rendering della serie
+        self.assertIn("/api/tps", body)   # fonte dati
+        self.assertIn("token/s", body)    # etichetta
+
+    def test_tps_chart_readability(self) -> None:
+        """Revisione leggibilità: unità di misura sui valori, tooltip coi valori
+        puntuali al passaggio del mouse, griglia tratteggiata di guida."""
+        body = self._read()
+        self.assertIn("t/s", body)                 # unità di misura
+        self.assertIn("tpstip", body)              # tooltip dei punti
+        self.assertIn("stroke-dasharray", body)    # linee tratteggiate
+        self.assertIn("mouseenter", body)          # hover sui punti
+
+    def test_tps_chart_backpressure_line(self) -> None:
+        """Il target di backpressure è disegnato: linea rossa tratteggiata sul
+        pavimento token/s, scala sempre inclusiva del target, costante pagina
+        e gateway tenute sincrone dal test."""
+        body = self._read()
+        with open(os.path.join(_REPO, "backend/gateway.py"), encoding="utf-8") as f:
+            gw = f.read()
+        self.assertIn("TPS_FLOOR = 10", body)
+        self.assertIn("_CHAT_TPS_FLOOR = 10.0", gw)
+        self.assertIn('"#e5534b"', body)        # la linea rossa
+        self.assertIn("backpressure", body)     # etichetta sul target
+
+    def test_ip_filter_input(self) -> None:
+        """Revisione: il filtro IP si scrive anche a mano, non solo col click
+        sull'IP del riquadro."""
+        body = self._read()
+        self.assertIn('id="ipinput"', body)
+        self.assertIn("filtra per IP", body)
+
+    def test_consumi_box_not_in_admin(self) -> None:
+        """Revisione del change readme-loadtest-consumi: il riquadro consumi è
+        ROBA DA RAGAZZI — sta nella pagina del laboratorio, non qui."""
+        body = self._read()
+        self.assertNotIn('id="consumi"', body)
+        self.assertNotIn("/api/consumi/", body)
+
     def test_privacy_banner_removed(self) -> None:
         body = self._read()
         self.assertNotIn("Solo <b>metadati</b>", body)
@@ -908,6 +1128,36 @@ class TracePopupPageTest(unittest.TestCase):
         self.assertIn("showTrace", body)      # popup
         # il dettaglio recupera la riga completa dal server (design D4)
         self.assertIn("encodeURIComponent(ts)", body)  # fetch dentro traceBtn()
+
+
+class JsSyntaxTest(unittest.TestCase):
+    """Le pagine portano JS inline non compilato: un errore di sintassi rompe
+    TUTTA la pagina a runtime e i test di stringa non lo vedono (osservato:
+    graffa mancante nella refactor del 429, beccata solo dal browser).
+    node --check come guardia; skip se node non è installato."""
+
+    def _check(self, rel: str) -> None:
+        if shutil.which("node") is None:
+            self.skipTest("node non disponibile")
+        with open(os.path.join(_REPO, rel), encoding="utf-8") as f:
+            blocks = re.findall(r"<script>(.*?)</script>", f.read(), re.S)
+        self.assertTrue(blocks, rel)
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False,
+                                         encoding="utf-8") as f:
+            f.write("\n;\n".join(blocks))
+            path = f.name
+        try:
+            r = subprocess.run(["node", "--check", path], capture_output=True,
+                               text=True, timeout=30)
+            self.assertEqual(r.returncode, 0, f"{rel}:\n{r.stderr[:600]}")
+        finally:
+            os.unlink(path)
+
+    def test_index_js_syntax(self) -> None:
+        self._check("backend/web/static/index.html")
+
+    def test_admin_js_syntax(self) -> None:
+        self._check("backend/web/static/admin.html")
 
 
 class NginxTierTest(unittest.TestCase):
@@ -1281,6 +1531,48 @@ class SkillWorkflowPageTest(unittest.TestCase):
         self.assertIn('_CHAT_STEP_MAX_TOKENS = {"5": 768}', gw)
         self.assertIn("maxOut: 768", body)
 
+    # --- Riquadro consumi nella pagina del laboratorio (revisione del change
+    # readme-loadtest-consumi: la sessione del ragazzo corrente, non l'admin) --
+    def test_consumi_strip_on_lab_page(self) -> None:
+        body = self._read()
+        self.assertIn('id="consumi"', body)      # la strip sotto il banner
+        self.assertIn("/api/consumi/", body)     # fonte dati
+        self.assertIn("loadConsumi", body)       # aggiornata dopo ogni risposta
+        # revisione: l'etichetta "stime didattiche" non sta nel riquadro
+        self.assertNotIn("stime didattiche", body)
+
+    def test_consumi_refresh_periodically(self) -> None:
+        """Refresh periodico: la tabella si aggiorna anche senza risposte di
+        chat (es. dopo lo scaffold della tappa ③)."""
+        body = self._read()
+        self.assertIn("setInterval(loadConsumi", body)
+
+    def test_reply_time_next_to_trace(self) -> None:
+        """Revisione: accanto al bottone { } della trace, il tempo di risposta
+        del turno (visto dal ragazzo, attesa inclusa)."""
+        body = self._read()
+        self.assertIn("chat-ms", body)       # il badge del tempo
+        self.assertIn("elapsedMs", body)     # misurato lato client
+
+    def test_overload_429_autoretry(self) -> None:
+        """Backpressure lato ragazzo: al 429 la pagina avvisa il sovraccarico e
+        riprova da sola dopo il retry_after indicato dal gateway."""
+        body = self._read()
+        self.assertIn("sovraccarico", body)
+        self.assertIn("retry_after", body)
+        self.assertIn("doPost", body)          # il turno si può ritentare
+        self.assertIn("1000)", body)           # attesa in ms prima del retry
+
+    def test_consumi_rendered_as_table(self) -> None:
+        """Revisione: forma tabellare (non una riga) con il confronto COMPLETO —
+        energia, acqua e costo per entrambe le colonne, frontiera inclusa."""
+        body = self._read()
+        self.assertIn("<table", body)            # struttura tabellare
+        self.assertIn("Energia", body)           # le tre metriche...
+        self.assertIn("Acqua", body)
+        self.assertIn("Costo", body)
+        self.assertIn("kwh", body)               # ...anche per la frontiera
+
     def test_every_js_id_exists_in_markup(self) -> None:
         """Regressione: rinominare un id nel markup (tb4 -> tb5) senza aggiornare
         il getElementById corrispondente fa esplodere makeChat a runtime
@@ -1309,14 +1601,20 @@ class ModuleIndependenceTest(unittest.TestCase):
         mods: set[str] = set()
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
-                mods.update(a.name.split(".")[0] for a in node.names)
+                mods.update(a.name for a in node.names)
             elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-                mods.add(node.module.split(".")[0])
+                mods.add(node.module)
         return mods
 
     def test_gateway_does_not_import_skill_modules(self) -> None:
         mods = self._local_imports("backend/gateway.py")
-        self.assertNotIn("backend", mods)
+        # D1: il gateway non importa skill/service — la separazione che conta è
+        # quella del contratto di business. Unico ammesso: backend.costi (change
+        # readme-loadtest-consumi), leaf di costanti didattiche a zero accoppiamento.
+        allowed = {"backend.costi"}
+        bad = {m for m in mods
+               if m == "backend" or (m.startswith("backend.") and m not in allowed)}
+        self.assertEqual(bad, set())
 
     def test_skill_modules_do_not_import_gateway(self) -> None:
         for rel in ["backend/skill.py", "backend/service.py"]:
