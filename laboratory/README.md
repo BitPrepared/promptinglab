@@ -86,6 +86,53 @@ cd laboratory
 python3 -m unittest discover -s tests
 ```
 
+## Endpoint reale in tappa ⑤ (Hetzner Inference API) — opzionale
+
+La tappa ⑤ può confrontare il modello locale del campo con modelli open-weight
+di taglia superiore serviti dall'[Inference API di Hetzner](https://inference.hetzner.com)
+(sperimentale, gratuita; OpenAI-compat). Tutto passa **sempre dal gateway**:
+il token non arriva mai al browser.
+
+```bash
+# 1) Crea laboratory/.env (gitignored — modello in .env.example):
+echo 'HETZNER_API_KEY=<il-tuo-token>' > .env
+# 2) Avvia come al solito (docker compose legge il .env da solo):
+make up        # o make demo
+# 3) Dalla pagina /admin: riquadro «Endpoint reale» → [Attiva]
+```
+
+Comportamento e vincoli (sono loro stessi parte della lezione):
+
+- **Selettore solo in tappa ⑤**, e solo se: token configurato, interruttore
+  dell'educatore su ON (default OFF, si comanda da `/admin`), circuito di
+  protezione non scattato. Cambiare modello azzera la conversazione.
+- **I modelli grandi sul tier gratuito sono LENTI**: risposta non in streaming
+  e in coda — misurati anche 3 minuti per una card (768 token a ~4 t/s). Non
+  è un errore: lo spinner della ⑤ avvisa il ragazzo. Oltre 240 s il gateway
+  risponde con un errore chiaro (mai una pagina HTML di proxy).
+- **Modelli offerti**: `Qwen/Qwen3.6-35B-A3B-FP8` e `DeepSeek-V4-Flash-0731`.
+  `Kimi-K2.7-Code` non è in allowlist: col nostro token l'endpoint risponde
+  «model use not permitted» (verificato al campo — forse va abilitato in
+  console Hetzner). Quando torna, basta una riga in `_REMOTE_MODELS`.
+- **Limiti per API key** (finestra 60 s, condivisa da tutta la sala):
+  10 richieste · 4M token in ingresso · 100k in uscita. Il gateway li fa
+  rispettare **predittivamente**: la richiesta che li violerebbe non parte
+  mai. Quando si supera la linea il circuito **scatta e resta OFF** finché
+  l'educatore non preme [Sblocca] in `/admin` (onesto: la finestra invecchia
+  da sola, lo sblocco funziona solo se le richieste vecchie sono uscite).
+- **Le sessioni con endpoint reale** sono evidenziate nel pannello (badge
+  nuvola + nome modello); il grafico token/s resta quello del modello locale.
+- **Consumi**: in tappa ⑤ con modello remoto il riquadro mostra solo il
+  valore attuale — token **reali** dell'usage e costo API a **listino
+  standard** del modello (costanti didattiche in `backend/costi.py`, non il
+  prezzo dell'offerta sperimentale). Il confronto locale-vs-frontiera resta
+  calcolato sulle sole chat locali.
+
+Senza `.env` il laboratorio è identico a prima: nessun selettore, nessuna
+richiesta esterna. Per cambiare i modelli offerti o i listini: allowlist in
+`backend/gateway.py` (`_REMOTE_MODELS`) e `backend/costi.py`
+(`REMOTO_LISTINO_EUR_PER_MTOKEN`).
+
 ## Contratto del servizio (per `laboratorio-web`)
 
 `POST /scaffold` body `{"notes": "..."}` → `200` con `SkillOutput` in JSON

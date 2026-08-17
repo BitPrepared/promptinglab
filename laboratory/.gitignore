@@ -5,6 +5,9 @@ models/*.bin
 # Sessioni osservabilità (log metadati, generato a runtime)
 sessions/
 
+# Segreti: token dell'endpoint reale (vedi .env.example e README)
+.env
+
 # Binari llama.cpp precompilati usati dallo spike (scaricati, non committati)
 .llamacpp/
 

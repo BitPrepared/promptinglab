@@ -32,6 +32,22 @@ FRONTIERA_ACQUA_L_PER_MTOKEN = 0.03
 # grandezza didattico, dichiarato e modificabile
 FRONTIERA_KWH_PER_MTOKEN = 3.0
 
+# --- endpoint reale (Hetzner): LISTINO STANDARD per modello ------------------
+# EUR per milione di token (ingresso, uscita) ai prezzi di listino pubblici
+# delle API dei modelli open-weight (change endpoint-remoto-hetzner). NON è
+# il prezzo dell'offerta sperimentale Hetzner, che oggi è gratuita: la lezione
+# voluta dall'educatore è il listino standard, non la promozione. Ordini di
+# grandezza dichiarati e modificabili da qui, come le altre costanti.
+REMOTO_LISTINO_EUR_PER_MTOKEN = {
+    # listino della serie Qwen3 30B/35B-A3B (Alibaba Cloud / DashScope)
+    "Qwen/Qwen3.6-35B-A3B-FP8": (0.10, 0.40),
+    # listino della serie DeepSeek flash (13B attivi: la taglia «economa»)
+    "DeepSeek-V4-Flash-0731": (0.07, 0.25),
+    # Kimi NON in allowlist: l'endpoint risponde «model use not permitted»
+    # col nostro token (campo, 2026-08-17) — riga pronta per quando torna:
+    # "Kimi-K2.7-Code": (0.55, 2.20),
+}
+
 
 def stima(tok_in: int, tok_out: int, secondi: float) -> dict:
     """Stima dei consumi di un'attività: locale (energia/costo/acqua ≈ 0)
@@ -61,3 +77,14 @@ def stima(tok_in: int, tok_out: int, secondi: float) -> dict:
             "kwh": round(tok_out / 1_000_000.0 * FRONTIERA_KWH_PER_MTOKEN, 6),
         },
     }
+
+
+def stima_remota(modello: str, tok_in: int, tok_out: int) -> dict:
+    """Costo API a listino STANDARD dei token REALI consumati sull'endpoint
+    remoto (change endpoint-remoto-hetzner): qui niente è stimato tranne il
+    prezzo, che è il listino dichiarato per il modello scelto. Un modello
+    fuori listino costa 0.0 dichiarato, mai un prezzo inventato."""
+    eur_in, eur_out = REMOTO_LISTINO_EUR_PER_MTOKEN.get(modello, (0.0, 0.0))
+    return {"modello": modello, "tok_in": tok_in, "tok_out": tok_out,
+            "euro": round(tok_in / 1_000_000.0 * eur_in
+                          + tok_out / 1_000_000.0 * eur_out, 6)}

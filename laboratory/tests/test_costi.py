@@ -43,5 +43,37 @@ class CostiTest(unittest.TestCase):
         self.assertEqual(s["frontiera"]["kwh"], 0.0)
 
 
+class StimaRemotaTest(unittest.TestCase):
+    """Change endpoint-remoto-hetzner: costo a LISTINO STANDARD dei token
+    reali consumati sull'endpoint remoto — mai a prezzo sperimentale (€ 0)."""
+
+    def test_listino_dichiarato_per_modelli_in_allowlist(self) -> None:
+        # ogni entry del listino ha prezzi (in, out) per MTok positivi
+        for modello, (eur_in, eur_out) in costi.REMOTO_LISTINO_EUR_PER_MTOKEN.items():
+            with self.subTest(modello=modello):
+                self.assertGreater(eur_in, 0.0)
+                self.assertGreater(eur_out, 0.0)
+        self.assertIn("Qwen/Qwen3.6-35B-A3B-FP8", costi.REMOTO_LISTINO_EUR_PER_MTOKEN)
+        self.assertIn("DeepSeek-V4-Flash-0731", costi.REMOTO_LISTINO_EUR_PER_MTOKEN)
+
+    def test_stima_remota_a_listino(self) -> None:
+        r = costi.stima_remota("DeepSeek-V4-Flash-0731", 1_000_000, 500_000)
+        eur_in, eur_out = costi.REMOTO_LISTINO_EUR_PER_MTOKEN["DeepSeek-V4-Flash-0731"]
+        self.assertAlmostEqual(r["euro"], eur_in + eur_out / 2, places=6)
+        self.assertEqual(r["modello"], "DeepSeek-V4-Flash-0731")
+        self.assertEqual((r["tok_in"], r["tok_out"]), (1_000_000, 500_000))
+
+    def test_stima_remota_scales_with_tokens(self) -> None:
+        m = "Qwen/Qwen3.6-35B-A3B-FP8"
+        piccolo = costi.stima_remota(m, 100, 100)["euro"]
+        grande = costi.stima_remota(m, 100_000, 100_000)["euro"]
+        self.assertGreater(grande, piccolo)
+
+    def test_modello_sconosciuto_zero_onesto(self) -> None:
+        # fuori allowlist non si inventa un prezzo: zero dichiarato
+        r = costi.stima_remota("modello-sconosciuto", 1000, 1000)
+        self.assertEqual(r["euro"], 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

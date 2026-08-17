@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Laboratorio di Prompting — Campo 2026</title>
+<title>Laboratorio di Prompting</title>
 <style>
   /* --- Pagina leggera per browser kiosk su Raspberry Pi 3 / 1 GB ----------- *
    * Zero CDN, zero richieste esterne, font di sistema. Un solo file.        *
@@ -49,6 +49,10 @@
     padding: 10px 14px; border-radius: 10px; margin-bottom: 14px; font-size: .95rem;
     border: 1px solid var(--line); background: var(--panel);
   }
+  /* il banner e il riquadro consumi stanno in FONDO alla pagina (feedback di
+   * campo): dopo il riquadro di input dell'ultima tappa, prima della nav —
+   * prima occupavano la testa della pagina e spingevano giù la lezione */
+  .bottom-status { margin-top: 18px; }
   #model-banner.ok { border-color: var(--accent-2); color: var(--accent-2); }
   #model-banner.warn { border-color: var(--warn); color: var(--warn); }
   #model-banner.check { color: var(--dim); }
@@ -161,6 +165,18 @@
     border: 1px solid var(--accent-2); border-radius: 999px; color: var(--accent-2); font-size: .74rem;
   }
 
+  /* --- Endpoint reale (tappa ⑤, change endpoint-remoto-hetzner) --------- */
+  .model-pick { align-items: center; gap: 10px; flex-wrap: wrap; }
+  .model-pick label { color: var(--dim); font-size: .94rem; }
+  .model-pick select {
+    background: var(--panel); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 8px; padding: 5px 8px; font-size: .92rem; font-family: inherit;
+  }
+  .model-pick select:disabled { opacity: .55; }
+  .model-budget { color: var(--dim); font-size: .85rem; }
+  #remote-note { color: var(--warn); font-size: .85rem; margin: 4px 0 0; }
+  .skill-badge.remote { border-color: var(--warn); color: var(--warn); }
+
   /* --- Workflow Diario di Bordo (tappa 4) ------------------------------------------------- */
   #skill { background: transparent; border: 0; padding: 0; }
   #notes { min-height: 120px; }
@@ -245,11 +261,6 @@
     <button class="step-dot" data-step-dot="3" type="button">④ Workflow</button>
     <button class="step-dot" data-step-dot="4" type="button">⑤ Prompt Eng.</button>
   </div>
-
-  <!-- Banner stato modello -->
-  <div id="model-banner" class="check" role="status" aria-live="polite">Controllo del modello…</div>
-  <!-- Costo della sessione del ragazzo: locale vs modello di frontiera -->
-  <div id="consumi" hidden></div>
 
   <!-- ============ STEP 1 — CONTEXT INJECTION (due tab: con/senza memoria) -->
   <section class="step" data-step="0">
@@ -377,6 +388,15 @@ tu: «Che fatica! Chi c'era con te? E com'è finita?»</pre>
       0 = precisa e ripetitiva · alta = creativa — regolala, poi guarda nel popup { }
       quale temperatura è partita davvero
     </div>
+    <!-- Endpoint reale: il selettore compare solo se il gateway lo permette
+         (token configurato + interruttore dell'educatore + circuito non
+         scattato). Il default resta il modello locale del campo. -->
+    <div class="row model-pick" id="model-pick" hidden>
+      <label for="model5">Modello</label>
+      <select id="model5"></select>
+      <span class="model-budget" id="model5-budget"></span>
+    </div>
+    <div id="remote-note" hidden></div>
     <div class="chat-toolbox" id="tb5"></div>
     <div class="row" style="margin-top:12px">
       <label style="color:var(--dim);font-size:.94rem;display:flex;align-items:center;gap:6px">
@@ -386,6 +406,16 @@ tu: «Che fatica! Chi c'era con te? E com'è finita?»</pre>
     <iframe id="html-preview" sandbox="" hidden title="Anteprima HTML generato"></iframe>
   </section>
 
+  <!-- Stato in fondo alla pagina (feedback di campo): dopo il riquadro di
+       input della tappa, prima della navigazione — non più in testa, dove
+       spingevano giù spiegazione e chat. In tappa ⑤ il riquadro consumi
+       mostra DUE tabelle: il modello remoto scelto e la sessione in locale. -->
+  <div class="bottom-status">
+    <div id="model-banner" class="check" role="status" aria-live="polite">Controllo del modello…</div>
+    <!-- Costo della sessione del ragazzo: locale vs modello di frontiera -->
+    <div id="consumi" hidden></div>
+  </div>
+
   <!-- Navigazione -->
   <div class="nav">
     <button id="prev" class="ghost" type="button">« Indietro</button>
@@ -394,7 +424,7 @@ tu: «Che fatica! Chi c'era con te? E com'è finita?»</pre>
 </main>
 
 <footer>
-  Campo 2026 — Bit Prepared · pagina offline, zero richieste esterne
+  Bit Prepared · pagina offline, zero richieste esterne (tranne quando si usano provider esterni)
 </footer>
 
 <script>
@@ -402,7 +432,8 @@ tu: «Che fatica! Chi c'era con te? E com'è finita?»</pre>
 /* Wizard a step + toolbox di chat con l'LLM. Tappa 3 usa la skill (SkillOutput).
  * Stesso contratto della CLI; nessuna richiesta esterna. */
 
-var state = { step: 0, modelActive: null, modelName: null, clients: 0, maxStep: 5 };
+var state = { step: 0, modelActive: null, modelName: null, clients: 0, maxStep: 5,
+              remote: null };
 
 /* ============ Identità client + fetch con header/timeout/errori ============
  * Ogni browser ha un ID stabile (localStorage) inviato come X-Client-Id, così
@@ -473,6 +504,7 @@ function showStep(i) {
   var next = document.getElementById("next");
   next.disabled = (state.step === state.maxStep);
   next.textContent = (state.step === state.maxStep) ? "Fine" : "Avanti »";
+  loadConsumi();  // entrando/usando dalla ⑤ il riquadro cambia forma subito
 }
 document.querySelectorAll("[data-step-dot]").forEach(function (d) {
   d.addEventListener("click", function () { showStep(+d.dataset.stepDot); });
@@ -492,24 +524,68 @@ function loadConsumi() {
       var b = document.getElementById("consumi");
       if (!d || !d.has_tokens) { b.hidden = true; return; }
       b.hidden = false;
+      // tappa ⑤ con modello remoto: DUE tabelle (feedback di campo) — il
+      // modello scelto (token reali, listino) e la sessione in locale
+      if (state.step === 4 && modelPick.current) {
+        renderConsumiRemoto(b, d);
+        return;
+      }
       // forma tabellare: il confronto completo (energia, acqua, costo) si
-      // legge per righe, con entrambe le colonne a confronto
+      // legge per righe, con entrambe le colonne a confronto (calcolato sulle
+      // SOLE interazioni locali: i token del data center non sono consumi
+      // del mini PC)
       b.innerHTML =
         "<b><svg class='ic' aria-hidden='true'><use href='#i-globe' xlink:href='#i-globe'/></svg> Costo della tua sessione</b> <span>(" +
-        d.tok_out + " token generati, " + Math.round(d.secondi) + " s)</span>" +
-        "<table>" +
-        "<tr><th></th><th class='loc'><svg class='ic' aria-hidden='true'><use href='#i-pc' xlink:href='#i-pc'/></svg> Qui, sul mini PC</th>" +
-        "<th class='front'><svg class='ic' aria-hidden='true'><use href='#i-cloud' xlink:href='#i-cloud'/></svg> Su " + testoSicuro(d.frontiera.modello) + "</th></tr>" +
-        // numeri a decimali FISSI: il float grezzo per consumi piccoli arriva
-        // in notazione scientifica (9.7e-06) — illeggibile per un ragazzo
-        "<tr><th>Energia</th><td class='loc'>" + d.locale.kwh.toFixed(4) + " kWh</td>" +
-        "<td class='front'>" + d.frontiera.kwh.toFixed(4) + " kWh</td></tr>" +
-        "<tr><th>Acqua</th><td class='loc'>≈ 0 L (calcola nel locale)</td>" +
-        "<td class='front'><svg class='ic' aria-hidden='true'><use href='#i-drop' xlink:href='#i-drop'/></svg> " + d.frontiera.acqua_l.toFixed(6) + " L</td></tr>" +
-        "<tr><th>Costo</th><td class='loc'>€ " + d.locale.euro.toFixed(6) + " (luce)</td>" +
-        "<td class='front'>€ " + d.frontiera.euro.toFixed(4) + " (API)</td></tr>" +
-        "</table>";
+        d.tok_out + " token generati, " + Math.round(d.secondi) + " s" +
+        (d.remoto && d.remoto.length ? " — solo chat locali" : "") + ")</span>" +
+        comparisonTableHtml(d);
     }).catch(function () { document.getElementById("consumi").hidden = true; });
+}
+/* Il confronto locale-vs-frontiera (righe: energia, acqua, costo; calcolato
+ * sulle SOLE interazioni locali). Condivisa dal riquadro standard e dalla
+ * seconda tabella della tappa ⑤. */
+function comparisonTableHtml(d) {
+  return "<table>" +
+    "<tr><th></th><th class='loc'><svg class='ic' aria-hidden='true'><use href='#i-pc' xlink:href='#i-pc'/></svg> Qui, sul mini PC</th>" +
+    "<th class='front'><svg class='ic' aria-hidden='true'><use href='#i-cloud' xlink:href='#i-cloud'/></svg> Su " + testoSicuro(d.frontiera.modello) + "</th></tr>" +
+    // numeri a decimali FISSI: il float grezzo per consumi piccoli arriva
+    // in notazione scientifica (9.7e-06) — illeggibile per un ragazzo
+    "<tr><th>Energia</th><td class='loc'>" + d.locale.kwh.toFixed(4) + " kWh</td>" +
+    "<td class='front'>" + d.frontiera.kwh.toFixed(4) + " kWh</td></tr>" +
+    "<tr><th>Acqua</th><td class='loc'>≈ 0 L (calcola nel locale)</td>" +
+    "<td class='front'><svg class='ic' aria-hidden='true'><use href='#i-drop' xlink:href='#i-drop'/></svg> " + d.frontiera.acqua_l.toFixed(6) + " L</td></tr>" +
+    "<tr><th>Costo</th><td class='loc'>€ " + d.locale.euro.toFixed(4) + " (luce)</td>" +
+    "<td class='front'>€ " + d.frontiera.euro.toFixed(4) + " (API)</td></tr>" +
+    "</table>";
+}
+/* Tappa ⑤ + modello remoto: DUE tabelle (feedback di campo). La prima è il
+ * modello scelto poco prima — i token sono REALI (usage dell'endpoint) e il
+ * costo è a listino standard, mai il prezzo dell'offerta sperimentale. La
+ * seconda è la sessione in locale: il confronto di sempre. */
+function renderConsumiRemoto(b, d) {
+  var rem = d.remoto || [];
+  var mine = rem.filter(function (r) { return r.modello === modelPick.current; });
+  var html =
+    "<b><svg class='ic' aria-hidden='true'><use href='#i-cloud' xlink:href='#i-cloud'/></svg> Il modello scelto: " +
+    testoSicuro(shortModelName(modelPick.current)) + "</b>";
+  if (mine.length) {
+    var totIn = 0, totOut = 0, totEur = 0;
+    mine.forEach(function (r) {
+      totIn += r.tok_in || 0; totOut += r.tok_out || 0; totEur += r.euro || 0;
+    });
+    html += " <span>(" + totIn + " token in, " + totOut + " generati)</span>" +
+      "<table>" +
+      "<tr><th>Token</th><td class='front'>" + totIn + " in · " + totOut + " out</td></tr>" +
+      "<tr><th>Costo API</th><td class='front'>€ " + totEur.toFixed(4) +
+      " a listino standard</td></tr></table>";
+  } else {
+    html += " <span>— nessuna risposta ancora da questo modello</span>";
+  }
+  html +=
+    "<b><svg class='ic' aria-hidden='true'><use href='#i-pc' xlink:href='#i-pc'/></svg> La tua sessione in locale</b> <span>(" +
+    d.tok_out + " token generati, " + Math.round(d.secondi) + " s — solo chat locali)</span>" +
+    comparisonTableHtml(d);
+  b.innerHTML = html;
 }
 
 /* ============ Banner stato modello ============ */
@@ -537,7 +613,9 @@ function checkModel() {
     state.modelActive = !!res.body.model_active;
     state.modelName = res.body.model || null;
     state.clients = res.body.clients || 0;
+    state.remote = (res.body && res.body.remote) || null;  // endpoint reale ⑤
     renderBanner();
+    renderModelPick();
     refreshChats();
     setTimeout(checkModel, 15000);  // aggiorna n. utenti connessi nel banner
   }).catch(function () { state.modelActive = false; renderBanner(); refreshChats(); });
@@ -669,7 +747,12 @@ function makeChat(root, opts) {
     var sys = opts.system ? opts.system(text) : null;
     var spin = document.createElement("div");
     spin.className = "chat-spinner";
-    spin.textContent = "elaborazione";
+    // endpoint reale: il ragazzo sa cosa sta aspettando (e quanto può durare —
+    // la coda del tier gratuito misura in minuti, non è un errore)
+    var remoteNow = (typeof opts.model === "function") && opts.model();
+    spin.textContent = remoteNow
+      ? "elaborazione sul modello remoto — l'attesa può durare anche minuti"
+      : "elaborazione";
     log.appendChild(spin);
     log.scrollTop = log.scrollHeight;
     sendBtn.disabled = true;
@@ -677,6 +760,9 @@ function makeChat(root, opts) {
     // tab A (senza memoria): parte SOLO l'ultimo messaggio; il resto resta nostro
     var toSend = (opts.memory === false) ? hist.slice(-1) : hist.slice();
     var body = { messages: (sys ? [{ role: "system", content: sys }] : []).concat(toSend) };
+    // endpoint reale (tappa ⑤): il modello scelto viaggia nel body; assente =
+    // percorso locale di sempre — la scelta la valida il gateway
+    if (typeof opts.model === "function") { var mo = opts.model(); if (mo) body.model = mo; }
     // il gateway clampa comunque (0–1.5): qui chiediamo solo la preferenza —
     // che può essere fissa (tappe ②③) o letta al volo (slider della ⑤)
     var tp = (typeof opts.temperature === "function") ? opts.temperature() : opts.temperature;
@@ -703,7 +789,9 @@ function makeChat(root, opts) {
       spin.remove();
     }
     function doPost() {
-      labFetch("/api/chat", { method: "POST", body: JSON.stringify(body) }, opts.step, 150000)
+      // timeout client > gateway (240 s) > modello: così arriva sempre il JSON
+      // del gateway (anche l'errore di lentezza), mai una pagina HTML di proxy
+      labFetch("/api/chat", { method: "POST", body: JSON.stringify(body) }, opts.step, 270000)
       .then(function (res) {
       var j = res.body || {};
       // backpressure: finché il gateway risponde 429 il turno resta aperto —
@@ -724,6 +812,20 @@ function makeChat(root, opts) {
       }
       spinStop();
       var elapsedMs = Date.now() - t0;
+      // endpoint reale spento/scattato (≠ overload locale): niente countdown
+      // né retry — serve l'educatore. E l'errore remoto NON tocca modelActive:
+      // le chat locali restano attive (isolamento, change endpoint-remoto)
+      if (j.remote_disabled) {
+        var rdb = bubble(null, j.error || "endpoint reale disattivato — avvisa l'educatore", "err", "warn");
+        addTraceBtn(rdb, j.trace);
+        refreshRemote();   // il selettore si blocca subito col motivo
+        return;
+      }
+      if (j.remote_error) {
+        var reb = bubble(null, j.error || "errore dell'endpoint reale", "err", "warn");
+        addTraceBtn(reb, j.trace);
+        return;
+      }
       if (j.model_active === false) { bubble(null, j.error || "modello non attivo", "err", "warn"); setDisabled(true); state.modelActive = false; renderBanner(); return; }
       if (!res.ok || j.error) {
         var errTxt = String(j.error || ("errore " + res.status));
@@ -741,13 +843,14 @@ function makeChat(root, opts) {
       var ia = bubble("assistant", j.reply);
       addTiming(ia, elapsedMs);    // accanto a { }: quanto ha aspettato il ragazzo
       addTraceBtn(ia, j.trace);    // { }: request/response di QUESTO turno
-      // badge ingranaggio (tappa ③): la risposta è stata prodotta con la skill caricata
+      // badge ingranaggio (tappa ③): la risposta è stata prodotta con la skill
+      // caricata; nuvola (tappa ⑤): prodotta dall'endpoint reale sul modello scelto
       if (opts.badge) {
         var btxt = opts.badge();
         if (btxt) {
           var b = document.createElement("span");
-          b.className = "skill-badge";
-          b.appendChild(ic("gear"));
+          b.className = "skill-badge" + (opts.badgeIcon === "cloud" ? " remote" : "");
+          b.appendChild(ic(opts.badgeIcon || "gear"));
           b.appendChild(document.createTextNode(" " + btxt));
           ia.appendChild(b);
         }
@@ -761,6 +864,7 @@ function makeChat(root, opts) {
       }
       setTokens(j.usage ? j.usage.prompt_tokens : null);
       loadConsumi();  // il costo della sessione cresce con ogni risposta
+      if (j.remote) refreshRemote();  // budget richieste aggiornato al volo
       if (opts.onHist) opts.onHist(hist);
       if (opts.onReply) opts.onReply(j.reply);
       }).catch(function (err) {
@@ -907,6 +1011,80 @@ ruleHost.appendChild(document.createTextNode(
   TRIGGER_WORDS.join(" · ") + ". Qui la decisione la prende una regola fissa; " +
   "nel mondo reale decide l'agente, leggendo la descrizione della skill."));
 
+/* ============ Endpoint reale in tappa ⑤ (change endpoint-remoto-hetzner) ===
+ * Il selettore compare solo quando il gateway lo dice (token nell'.env +
+ * interruttore dell'educatore + circuito di protezione non scattato): la
+ * pagina non decide nulla, al massimo mostra. Il budget richieste della
+ * finestra 60 s è condiviso da tutta la sala: si vede prima di inviare.
+ * Cambiare modello azzera la conversazione (il prompt seme resta): stesso
+ * prompt, modelli a confronto — niente risultato sporcato, come i preset ②. */
+var modelPick = { current: "" };   // "" = modello locale del campo
+
+function shortModelName(m) {
+  return String(m).split("/").pop().replace(/-(FP8|NVFP4)$/, "");
+}
+function setModel5(v) {
+  if (v === modelPick.current) return;
+  modelPick.current = v;
+  if (typeof chat5 !== "undefined" && chat5) chat5.reset();  // confronto pulito
+  loadConsumi();  // il riquadro consumi cambia forma
+}
+function renderModelPick() {
+  var host = document.getElementById("model-pick");
+  var sel = document.getElementById("model5");
+  var bud = document.getElementById("model5-budget");
+  var note = document.getElementById("remote-note");
+  var r = state.remote;
+  if (!r || !r.available || !r.enabled) {
+    host.hidden = true; note.hidden = true;
+    setModel5("");   // educatore OFF (o token assente): si torna al locale
+    return;
+  }
+  host.hidden = false;
+  if (r.tripped) {
+    sel.disabled = true;
+    bud.textContent = "";
+    note.hidden = false;
+    note.textContent = "Endpoint reale disattivato: " + (r.reason || "limite superato") +
+                       " — avvisa l'educatore, può sbloccarlo dal pannello admin.";
+    setModel5("");   // circuito scattato: niente cloud finché non si sblocca
+    return;
+  }
+  sel.disabled = false;
+  note.hidden = true;
+  // opzioni: modello locale + allowlist arrivata dal gateway (mai hardcodata)
+  var want = [""].concat(r.models || []);
+  var same = sel.options.length === want.length;
+  for (var i = 0; same && i < want.length; i++) {
+    if (sel.options[i].value !== want[i]) same = false;
+  }
+  if (!same) {
+    sel.innerHTML = "";
+    want.forEach(function (m) {
+      var o = document.createElement("option");
+      o.value = m;
+      // come si dice «Modello locale», il remoto dichiara il PROVIDER
+      // (es. «Hetzner · Qwen3.6-35B»): da dove arriva la risposta è lezione
+      o.textContent = m ? (r.provider ? r.provider + " · " : "") + shortModelName(m)
+                        : "Modello locale" + (state.modelName ? " (" + state.modelName + ")" : "");
+      sel.appendChild(o);
+    });
+  }
+  sel.value = (want.indexOf(modelPick.current) !== -1) ? modelPick.current : "";
+  setModel5(sel.value);   // modello sparito dall'allowlist → si torna al locale
+  var w = r.window;
+  if (w) bud.textContent =
+    Math.max(0, w.req_limit - w.req) + "/" + w.req_limit + " richieste disponibili nei 60 s";
+}
+function refreshRemote() {
+  labFetch("/api/model-status", { method: "GET" }, null, 4000).then(function (res) {
+    if (res.body && res.body.remote) { state.remote = res.body.remote; renderModelPick(); }
+  }).catch(function () {});
+}
+document.getElementById("model5").addEventListener("change", function () {
+  setModel5(this.value || "");
+});
+
 /* Tappa 5: prompt engineering, seed precompilato + anteprima HTML opzionale.
  * La temperatura è LA lezione di questa tappa: slider in mano al ragazzo
  * (default di aderenza; il gateway resta l'arbitro, la trace mostra l'applicato). */
@@ -915,12 +1093,15 @@ var $temp5 = document.getElementById("temp5");
 var $temp5val = document.getElementById("temp5-val");
 function temp5Value() { return parseFloat($temp5.value); }
 $temp5.addEventListener("input", function () { $temp5val.textContent = $temp5.value; });
-makeChat(document.getElementById("tb5"), {
+var chat5 = makeChat(document.getElementById("tb5"), {
   placeholder: "Modifica il prompt o scrivi il tuo…",
   step: 5, meter: true,
   seed: function () { return SEED; },
   temperature: temp5Value,
   maxOut: 768,   // dichiarato dal gateway per tappa (X-Step): qui si mostra
+  model: function () { return modelPick.current; },
+  badge: function () { return modelPick.current ? shortModelName(modelPick.current) : null; },
+  badgeIcon: "cloud",
   onReply: maybeRenderPreview
 });
 
@@ -1065,7 +1246,9 @@ function renderOutput(data) {
   if ((data.inferences || []).length) { var ib = document.createElement("div"); ib.className = "inf-box"; ib.textContent = "Inferenze etichettate (ipotesi, non fatti): " + data.inferences.join("; "); wrap.appendChild(ib); }
   $out.appendChild(wrap);
 }
-function testoSicuro(s) { var d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.textContent; }
+/* testoSicuro DEVE leggere innerHTML: textContent ritorna la stringa grezza
+ * (stesso bug dell'esc() del pannello admin, trovato al campo con le card HTML). */
+function testoSicuro(s) { var d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
 
 /* ============ Init ============ */
 showStep(0);

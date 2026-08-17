@@ -39,6 +39,10 @@ services:
       GATEWAY_PORT: "8090"
       # Osservabilità: sessioni (sqlite3, sessions.db) persistite nel volume.
       LAB_SESSIONS_DIR: /app/sessions
+      # Endpoint reale (tappa ⑤): il token vive SOLO qui, mai nel client.
+      # Da laboratory/.env (gitignored, vedi .env.example); senza token il
+      # selettore dei modelli remoti non compare e nulla cambia.
+      HETZNER_API_KEY: ${HETZNER_API_KEY:-}
     volumes:
       - ./sessions:/app/sessions   # persistenza sessioni tra riavvii (debug a posteriori)
     command: ["python3", "-m", "backend.gateway"]

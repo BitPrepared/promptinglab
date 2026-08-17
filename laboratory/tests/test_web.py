@@ -1702,10 +1702,13 @@ class SkillWorkflowPageTest(unittest.TestCase):
         self.assertIn("kwh", body)               # ...anche per la frontiera
         # decimali FISSI al rendering: il float grezzo per consumi piccoli
         # arriverebbe in notazione scientifica (9.7e-06) — illeggibile.
-        # Energia a 4 cifre (richiesta dell'educatore), € e acqua come il backend
+        # Energia e costo a 4 cifre (richieste dell'educatore), acqua come il
+        # backend (litri: 6 cifre, i numeri sono minuscoli)
         self.assertIn("kwh.toFixed(4)", body)
         self.assertIn("acqua_l.toFixed(6)", body)
-        self.assertIn("euro.toFixed(6)", body)
+        self.assertIn("euro.toFixed(4)", body)
+        # le colonne costo sono ALLINEATE: locale e frontiera entrambe a 4 cifre
+        self.assertNotIn("euro.toFixed(6)", body)
 
     def test_every_js_id_exists_in_markup(self) -> None:
         """Regressione: rinominare un id nel markup (tb4 -> tb5) senza aggiornare

@@ -52,6 +52,12 @@
   .tl .when { color:var(--dim); font-size:.78rem; float:right; }
   .badge { display:inline-block; background:var(--panel-2); border:1px solid var(--line);
     border-radius:999px; padding:1px 7px; font-size:.74rem; color:var(--dim); margin-left:4px; }
+  /* righe/sessioni con endpoint reale (change endpoint-remoto-hetzner) */
+  .badge.rem { border-color:var(--warn); color:var(--warn); }
+  .remotebox .st { font-weight:600; }
+  .remotebox .st.ok { color:var(--accent-2); }
+  .remotebox .st.err { color:#e5534b; }
+  .remotebox .wbtn { margin-top:6px; }
   .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--accent-2); margin-right:4px; vertical-align:middle; }
   .it-body { display:none; margin-top:6px; border-top:1px dashed var(--line); padding-top:6px; }
   .tl li.open .it-body { display:block; }
@@ -101,6 +107,7 @@
 <!-- Mini sprite icone (le emoji non si vedono nel font del kiosk) -->
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
   <symbol id="i-person" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="5" r="2.7"/><path d="M2.8 14c.6-3.3 2.7-5 5.2-5s4.6 1.7 5.2 5"/></symbol>
+  <symbol id="i-cloud" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.4h6.1a2.9 2.9 0 0 0 .5-5.7 4.3 4.3 0 0 0-8.2-.8A3.2 3.2 0 0 0 5 12.4Z"/></symbol>
   <symbol id="i-robot" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3.4" y="6" width="9.2" height="7" rx="1.4"/><path d="M8 6V4.2"/><circle cx="8" cy="3.1" r=".9"/><circle cx="6.1" cy="9.6" r=".75" fill="currentColor" stroke="none"/><circle cx="9.9" cy="9.6" r=".75" fill="currentColor" stroke="none"/><path d="M6.2 12.1h3.6"/></symbol>
 </defs></svg>
 <header>
@@ -125,6 +132,7 @@
     <ul class="ulist" id="ulist"><li class="empty">caricamento…</li></ul>
   </div>
   <div class="col">
+    <div class="tpsbox remotebox" id="remotebox"><span class="empty">endpoint reale: caricamento…</span></div>
     <div class="tpsbox" id="tps"><span class="empty">token/s: nessuna chat ancora</span><div class="tt" id="tpstip" hidden></div></div>
     <h2 id="tl-title">Timeline</h2>
     <div class="wbar" style="justify-content:flex-end">
@@ -154,7 +162,10 @@ function ago(ts) {
   return Math.round(s / 3600) + "h fa";
 }
 function short(cid) { return cid.length > 14 ? cid.slice(0, 14) + "…" : cid; }
-function esc(s) { var d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.textContent; }
+/* esc DEVE leggere innerHTML: textContent ritorna la stringa GREZZA e l'HTML
+ * delle risposte del modello (le card della tappa ⑤) veniva interpretato nel
+ * pannello, cambiando la grafica — regressione osservata al campo. */
+function esc(s) { var d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
 function stepName(step) {
   return ({ "1": "① Context", "2": "② System", "3": "③ Skills", "4": "④ Workflow", "5": "⑤ Prompt Eng." })[step] || ("tappa " + (step || "?"));
 }
@@ -199,7 +210,9 @@ function loadList() {
         ' <span class="ipf" title="filtra questo IP">' + esc(a.last_ip || "—") + "</span>" +
         '<div class="row2">' + a.count + (a.count === 1 ? " interazione" : " interazioni") +
         " · " + ago(a.last_seen) +
-        (a.steps && a.steps.length ? ' · tappe ' + a.steps.join(",") : "") + "</div>";
+        (a.steps && a.steps.length ? ' · tappe ' + a.steps.join(",") : "") +
+        (a.remote ? ' · <span class="badge rem"><svg class="ic" aria-hidden="true"><use href="#i-cloud" xlink:href="#i-cloud"/></svg> endpoint reale</span>' : "") +
+        "</div>";
       li.querySelector(".ipf").onclick = (function (ip) {
         return function (ev) { ev.stopPropagation(); if (ip) setIpFilter(ip); };
       })(a.last_ip);
@@ -233,6 +246,7 @@ function loadTimeline(cid) {
         ' <span class="badge">' + it.status + "</span>" +
         ' <span class="badge">' + Math.round(it.ms) + "ms</span>" +
         (it.turns ? ' <span class="badge">' + it.turns + (it.turns === 1 ? " turno" : " turni") + "</span>" : "") +
+        (it.endpoint ? ' <span class="badge rem" title="interazione sull\'endpoint reale"><svg class="ic" aria-hidden="true"><use href="#i-cloud" xlink:href="#i-cloud"/></svg> ' + esc(shortEp(it.endpoint)) + "</span>" : "") +
         '<div class="row2">in ' + (it.in_len || 0) + " car · out " + (it.out_len || 0) + " car</div>" +
         '<div class="it-body">' +
         '<div class="lab">Ingresso</div><pre>' + esc(it.in || "—") + "</pre>" +
@@ -265,6 +279,7 @@ function renderConversation(d) {
       a.innerHTML = '<span class="who"><svg class="ic" aria-hidden="true"><use href="#i-robot" xlink:href="#i-robot"/></svg></span><div class="bub">' + esc(it.out || "—") +
         '<div class="cmeta">' + new Date(it.ts * 1000).toLocaleTimeString() +
         (it.turns ? " · " + it.turns + (it.turns === 1 ? " turno" : " turni") : "") +
+        (it.endpoint ? ' · <span class="badge rem"><svg class="ic" aria-hidden="true"><use href="#i-cloud" xlink:href="#i-cloud"/></svg> ' + esc(shortEp(it.endpoint)) + "</span>" : "") +
         (it.status >= 400 ? " · err " + it.status : "") + "</div></div>";
       if (it.has_trace) a.querySelector(".bub").appendChild(traceBtn(TL_CID, it.ts));
       tl.appendChild(a);
@@ -504,6 +519,90 @@ function toggleView() {
   if (SEL) loadTimeline(SEL);
 }
 
+/* ============ Endpoint reale (change endpoint-remoto-hetzner) ==============
+ * Riquadro di comando: stato (off / attivo / scattato col motivo), consumo
+ * della finestra 60 s CONDIVISA dalla sala e i due comandi dell'educatore —
+ * interruttore on/off e sblocco del circuito. Prima parte mutante del
+ * pannello: LAN fidata, azioni limitate a on/off/unlock. */
+function shortEp(m) { return String(m).split("/").pop().replace(/-(FP8|NVFP4)$/, ""); }
+function fmtK(n) { return n >= 1000 ? Math.round(n / 1000) + "k" : String(n); }
+
+function adminRemote(action) {
+  fetch("/api/admin/remote", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: action })
+  }).then(function (r) { return r.json(); })
+    .then(function (d) { if (d && d.remote) renderRemote(d.remote); })
+    .catch(function () {});
+}
+
+function renderRemote(r) {
+  var box = document.getElementById("remotebox");
+  box.innerHTML = "";
+  if (!r.available) {
+    box.innerHTML = '<span class="empty">endpoint reale non configurato: ' +
+      "manca HETZNER_API_KEY nel .env (vedi README)</span>";
+    return;
+  }
+  var w = r.window || { req: 0, req_limit: 10, tok_in: 0, tok_out: 0,
+                        tok_in_limit: 0, tok_out_limit: 0 };
+  var head = document.createElement("div");
+  var st = document.createElement("span");
+  st.className = "st ";
+  if (r.tripped) {
+    st.classList.add("err");
+    st.textContent = "SCATTATO — " + (r.reason || "limite superato");
+  } else if (r.enabled) {
+    st.classList.add("ok");
+    st.textContent = "attivo";
+  } else {
+    st.textContent = "off";
+  }
+  head.appendChild(document.createTextNode("Endpoint reale (tappa ⑤): "));
+  head.appendChild(st);
+  var info = document.createElement("div");
+  info.textContent = "finestra 60 s condivisa: richieste " + w.req + "/" + w.req_limit +
+    " · token in " + fmtK(w.tok_in) + "/" + fmtK(w.tok_in_limit) +
+    " · token out " + fmtK(w.tok_out) + "/" + fmtK(w.tok_out_limit);
+  box.appendChild(head);
+  box.appendChild(info);
+  // quanto cloud ha consumato il laboratorio DALL'INIZIO (non solo la
+  // finestra): la domanda dell'educatore a fine giornata
+  if (r.totali) {
+    var tot = document.createElement("div");
+    tot.textContent = "totale dall'inizio: " + r.totali.req +
+      (r.totali.req === 1 ? " richiesta" : " richieste") +
+      " · token in " + fmtK(r.totali.tok_in) +
+      " · token out " + fmtK(r.totali.tok_out);
+    box.appendChild(tot);
+  }
+  var bar = document.createElement("div");
+  var on = document.createElement("button");
+  on.className = "wbtn" + (r.enabled && !r.tripped ? " on" : "");
+  on.type = "button";
+  on.textContent = r.enabled ? "Spegni" : "Attiva";
+  on.onclick = function () { adminRemote(r.enabled ? "off" : "on"); };
+  bar.appendChild(on);
+  if (r.tripped) {
+    var un = document.createElement("button");
+    un.className = "wbtn";
+    un.type = "button";
+    un.textContent = "Sblocca";
+    un.title = "resetta il circuito: se la finestra è ancora piena, riscatta";
+    un.onclick = function () { adminRemote("unlock"); };
+    bar.appendChild(document.createTextNode(" "));
+    bar.appendChild(un);
+  }
+  box.appendChild(bar);
+}
+
+function loadRemote() {
+  fetch("/api/model-status").then(function (r) { return r.json(); })
+    .then(function (d) { if (d && d.remote) renderRemote(d.remote); })
+    .catch(function () {});
+}
+
 document.getElementById("wbar").addEventListener("click", function (ev) {
   var t = ev.target.closest ? ev.target.closest(".wbtn") : null;
   if (t) setWindow(t.getAttribute("data-w"));
@@ -520,7 +619,8 @@ document.getElementById("ipinput").addEventListener("keydown", function (e) {
 setWindow(WIN);
 renderIpBar();
 renderTps();
-setInterval(function () { loadList(); renderTps(); if (SEL) loadTimeline(SEL); }, TICK);
+loadRemote();
+setInterval(function () { loadList(); renderTps(); loadRemote(); if (SEL) loadTimeline(SEL); }, TICK);
 </script>
 </body>
 </html>
