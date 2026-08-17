@@ -380,3 +380,32 @@ Per ogni dialogo con il modello — le chat delle tappe ① Context Injection, �
 
 - **WHEN** la chiamata al modello fallisce con una risposta d'errore
 - **THEN** la vista mostra il body d'errore ricevuto come response
+
+### Requirement: Tappa Prompt Engineering con parametri espliciti
+
+La chat della tappa ⑤ Prompt Engineering SHALL esporre un controllo di temperatura regolabile entro i limiti ammessi dal gateway (0–1.5), con valore predefinito basso orientato all'aderenza, e SHALL inviare il valore selezionato con ogni richiesta. Il gateway SHALL applicare alla tappa ⑤ un tetto token più alto (fino al soffitto complessivo) rispetto al default delle altre chat, e la pagina SHALL dichiarare nell'interfaccia il tetto effettivo. I valori applicati dopo la normalizzazione del gateway restano osservabili nella trace della chiamata.
+
+#### Scenario: Il ragazzo regola la temperatura
+
+- **WHEN** il ragazzo sposta il controllo e invia un messaggio
+- **THEN** la richiesta porta la temperatura selezionata, visibile nella trace della chiamata
+
+#### Scenario: Default di aderenza
+
+- **WHEN** la tappa si apre
+- **THEN** il controllo parte da un valore basso di aderenza, non dal default alto delle chat libere
+
+#### Scenario: Limiti rispettati dal controllo
+
+- **WHEN** il ragazzo muove il controllo
+- **THEN** non può esprimere valori fuori dall'intervallo accettato dal gateway
+
+#### Scenario: Tetto token alto per la generazione di codice
+
+- **WHEN** la chat della tappa ⑤ chiede al gateway senza specificare un tetto
+- **THEN** il gateway applica il tetto alto della tappa, dichiarato nell'interfaccia e visibile nella trace; le altre tappe mantengono il tetto basso
+
+#### Scenario: Preferenza esplicita rispettata
+
+- **WHEN** una richiesta esprime un proprio tetto token
+- **THEN** il gateway lo rispetta entro i limiti complessivi, come per le altre tappe
