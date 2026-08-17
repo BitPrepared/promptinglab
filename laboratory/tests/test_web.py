@@ -1099,8 +1099,21 @@ class AdminPageTest(unittest.TestCase):
         self.assertIn("adesso", body)                # etichetta del bordo destro
         self.assertIn("nessuna chat negli ultimi", body)  # finestra vuota visibile
         # niente più posizionamento a indice: il punto sta al suo posto nel tempo
-        self.assertIn("xAt(p.ts)", body)
         self.assertNotIn("xAt(i)", body)
+
+    def test_tps_chart_aggregates_avg_and_min(self) -> None:
+        """Richiesta dell'educatore: niente punta-punta di TUTTE le chat raccolte
+        (sotto loadtest è rumore) — due linee per fascia temporale, la media e
+        il minimo, con legenda."""
+        body = self._read()
+        self.assertIn("TPS_BUCKET_S", body)          # aggregazione per fascia
+        self.assertIn('"media"', body)               # le due serie
+        self.assertIn('"minimo"', body)
+        self.assertIn("Math.min", body)              # il minimo è davvero il minimo
+        self.assertIn("a.reduce", body)              # ...e la media una media
+        # il punta-punta di ogni punto raccolto non c'è più (il polyline è
+        # solo quello delle due linee aggregate)
+        self.assertNotIn("points: win.map", body)
 
     def test_tps_chart_shows_rejected_429(self) -> None:
         """Il carico che NON passa (429 di backpressure) non produce punti:

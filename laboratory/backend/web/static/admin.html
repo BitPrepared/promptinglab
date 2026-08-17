@@ -337,6 +337,7 @@ var TPS_NS = "http://www.w3.org/2000/svg";
 var TPS_FLOOR = 10;    // = _CHAT_TPS_FLOOR del gateway: target di backpressure
                        // (il test li tiene sincroni)
 var TPS_WINDOW_S = 600;  // quanti secondi di storia tenere a schermo (10 min)
+var TPS_BUCKET_S = 30;   // aggregazione: media e minimo per fascia di questo passo
 function renderTps() {
   fetch("/api/tps").then(function (r) { return r.json(); }).then(function (d) {
     var box = document.getElementById("tps");
@@ -353,7 +354,9 @@ function renderTps() {
     var rj = rejs.filter(function (p) { return p.ts >= t0; });
     var tpsVals = win.map(function (p) { return p.tps; }).sort(function (a, b) { return a - b; });
     var maxT = tpsVals[tpsVals.length - 1] || 1;
-    var med = tpsVals.length ? tpsVals[Math.floor(tpsVals.length / 2)] : 0;
+    var avgWin = tpsVals.length
+      ? tpsVals.reduce(function (a, b) { return a + b; }, 0) / tpsVals.length
+      : 0;
     // la scala include SEMPRE il target: la linea rossa non sparisce mai
     var top = Math.max(maxT, TPS_FLOOR);
     // margini: sinistra per i tick Y, sotto per gli orari
@@ -402,27 +405,61 @@ function renderTps() {
     });
     var tip = document.getElementById("tpstip");
     if (win.length) {
-      // la serie, alla posizione nel tempo
-      svg.appendChild(el("polyline", { fill: "none", stroke: "var(--accent)",
-        "stroke-width": 2,
-        points: win.map(function (p) {
-          return xAt(p.ts).toFixed(1) + "," + yAt(p.tps).toFixed(1);
-        }).join(" ") }));
-      // punti con tooltip: valori puntuali al passaggio del mouse
+      // DUE LINEE, non il punta-punta di ogni chat: per fascia di TPS_BUCKET_S
+      // la media (il ritmo medio che il ragazzo sperimenta) e il minimo (la
+      // peggiore). Il degrado si legge come pendenza, non come rumore di punti.
+      var buckets = {};
       win.forEach(function (p) {
-        var c = el("circle", { cx: xAt(p.ts).toFixed(1), cy: yAt(p.tps).toFixed(1),
-          r: 3, fill: "var(--accent)", stroke: "transparent", "stroke-width": 6 });
-        c.addEventListener("mouseenter", function () {
-          tip.textContent = hhmm(p.ts) + " · " + p.client + " · " + p.tps +
-            " t/s · " + p.tok_out + " token in " + (p.ms / 1000).toFixed(1) + " s";
-          tip.hidden = false;
+        var b = Math.floor((p.ts - t0) / TPS_BUCKET_S);
+        (buckets[b] = buckets[b] || []).push(p);
+      });
+      var idxs = Object.keys(buckets).map(Number).sort(function (a, b2) { return a - b2; });
+      var drawLine = function (pick, color, label) {
+        var run = [];
+        var marks = document.createDocumentFragment();
+        var flush = function () {
+          if (run.length > 1) {  // fascia isolata: resta solo il pallino
+            svg.appendChild(el("polyline", { fill: "none", stroke: color,
+              "stroke-width": 2,
+              points: run.map(function (q) { return q[0].toFixed(1) + "," + q[1].toFixed(1); }).join(" ") }));
+          }
+          run = [];
+        };
+        idxs.forEach(function (b, k) {
+          if (k > 0 && b !== idxs[k - 1] + 1) flush();  // fascia vuota: niente pendii inventati
+          var px = xAt(t0 + (b + 0.5) * TPS_BUCKET_S);  // punto a centro fascia
+          var py = yAt(pick(buckets[b]));
+          run.push([px, py]);
+          var c = el("circle", { cx: px.toFixed(1), cy: py.toFixed(1), r: 3,
+            fill: color, stroke: "transparent", "stroke-width": 6 });
+          c.addEventListener("mouseenter", function () {
+            tip.textContent = hhmm(t0 + b * TPS_BUCKET_S) + " · " + label + " " +
+              pick(buckets[b]).toFixed(1) + " t/s · " + buckets[b].length + " chat";
+            tip.hidden = false;
+          });
+          c.addEventListener("mousemove", function (ev) {
+            tip.style.left = (ev.clientX + 12) + "px";
+            tip.style.top = (ev.clientY - 26) + "px";
+          });
+          c.addEventListener("mouseleave", function () { tip.hidden = true; });
+          marks.appendChild(c);
         });
-        c.addEventListener("mousemove", function (ev) {
-          tip.style.left = (ev.clientX + 12) + "px";
-          tip.style.top = (ev.clientY - 26) + "px";
-        });
-        c.addEventListener("mouseleave", function () { tip.hidden = true; });
-        svg.appendChild(c);
+        flush();
+        svg.appendChild(marks);  // i pallini sopra la linea
+      };
+      drawLine(function (a) {  // media della fascia
+        return a.reduce(function (s, p) { return s + p.tps; }, 0) / a.length;
+      }, "var(--accent)", "media");
+      drawLine(function (a) {  // peggiore della fascia
+        return Math.min.apply(null, a.map(function (p) { return p.tps; }));
+      }, "var(--warn)", "minimo");
+      // legenda delle due linee
+      [["media", "var(--accent)"], ["minimo", "var(--warn)"]].forEach(function (s, i2) {
+        var lx = ML + 8 + i2 * 62;
+        svg.appendChild(el("line", { x1: lx, x2: lx + 14, y1: MT + 7, y2: MT + 7,
+          stroke: s[1], "stroke-width": 2 }));
+        svg.appendChild(el("text", { x: lx + 18, y: MT + 10, "font-size": 9,
+          fill: "var(--dim)" }, s[0]));
       });
     } else {
       // finestra vuota: il tempo che avanza senza chat è informazione, non buco
@@ -433,8 +470,9 @@ function renderTps() {
     }
     box.innerHTML = "";
     var lbl = document.createElement("div");
-    lbl.textContent = "token/s (visti dal gateway) · ultimi 10 min · med " + med +
-      " · max " + maxT + " · " + win.length + " chat · 429: " + rj.length +
+    lbl.textContent = "token/s (visti dal gateway) · ultimi 10 min · media e minimo per fasce da " +
+      TPS_BUCKET_S + " s · media finestra " + avgWin.toFixed(1) +
+      " · " + win.length + " chat · 429: " + rj.length +
       (win.length ? " — passa sopra i punti" : "");
     box.appendChild(svg);
     box.appendChild(lbl);

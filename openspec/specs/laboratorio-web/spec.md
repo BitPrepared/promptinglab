@@ -417,7 +417,7 @@ La chat della tappa ⑤ Prompt Engineering SHALL esporre un controllo di tempera
 
 ### Requirement: Simulazione di carico e grafico dei token al secondo
 
-Il progetto SHALL fornire un comando (`make loadtest`) che simula N sessioni concorrenti di ragazzi, ognuna con una conversazione a più tappe sulle chat del gateway, producendo un report di esiti e latenze; le sessioni simulate SHALL risultare nell'osservabilità come sessioni normali. Il gateway SHALL registrare i token di prompt e completion di ogni interazione quando il servizio modello li espone, e il pannello educatore SHALL mostrare un grafico della serie tokens/secondo nel tempo, così che il degrado delle performance sotto carico sia visibile. L'asse del tempo del grafico SHALL essere ancorato all'istante corrente e avanzare anche in assenza di nuove chat; i 429 di backpressure SHALL essere rappresentati nel grafico come serie distinta da quella delle chat completate.
+Il progetto SHALL fornire un comando (`make loadtest`) che simula N sessioni concorrenti di ragazzi, ognuna con una conversazione a più tappe sulle chat del gateway, producendo un report di esiti e latenze; le sessioni simulate SHALL risultare nell'osservabilità come sessioni normali. Il gateway SHALL registrare i token di prompt e completion di ogni interazione quando il servizio modello li espone, e il pannello educatore SHALL mostrare un grafico della serie tokens/secondo nel tempo, così che il degrado delle performance sotto carico sia visibile. Il grafico SHALL rappresentare la serie aggregata per fasce temporali come DUE linee — la media e il minimo di ogni fascia — senza il punta-punta di ogni singola chat raccolta. L'asse del tempo del grafico SHALL essere ancorato all'istante corrente e avanzare anche in assenza di nuove chat; i 429 di backpressure SHALL essere rappresentati nel grafico come serie distinta da quella delle chat completate.
 
 #### Scenario: Lancio della simulazione
 
@@ -437,7 +437,7 @@ Il progetto SHALL fornire un comando (`make loadtest`) che simula N sessioni con
 #### Scenario: Grafico dei token al secondo
 
 - **WHEN** l'educatore apre il pannello e ci sono chat con token registrati
-- **THEN** il grafico mostra la serie tokens/secondo nel tempo, senza librerie esterne
+- **THEN** il grafico mostra l'andamento tokens/secondo nel tempo come due linee (media e minimo per fascia) con legenda, senza librerie esterne
 
 #### Scenario: Il tempo avanza anche senza chat
 
