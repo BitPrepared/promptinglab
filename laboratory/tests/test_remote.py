@@ -634,9 +634,12 @@ class PageRemoteTest(unittest.TestCase):
     def test_selector_names_the_provider(self) -> None:
         """Come si dice «Modello locale», il remoto dichiara il provider
         (es. «Hetzner · Qwen3.6-35B»): da dove arriva la risposta non è un
-        dettaglio, è parte della lezione."""
+        dettaglio, è parte della lezione. Anche il budget dice DI CHI è il
+        limite («disponibili su Hetzner»), e si vede solo con un modello
+        remoto selezionato: col locale sarebbe rumore fuorviante."""
         body = self._read()
         self.assertIn("r.provider", body)
+        self.assertIn("disponibili su", body)
 
     def test_model_change_resets_conversation(self) -> None:
         """Cambio modello a conversazione aperta = azzeramento (come i preset

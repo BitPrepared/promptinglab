@@ -249,7 +249,7 @@
 </defs></svg>
 <header>
   <h1>Laboratorio di Prompting</h1>
-  <div class="sub">Il prompt smette di essere una domanda e diventa istruzione tecnica: smetti di subire il tono dell'IA e inizi a programmarlo.</div>
+  <div class="sub">Il prompt smette di essere una domanda e diventa istruzione tecnica: smetti di subire il tono dell'IA e inizia a programmarlo.</div>
 </header>
 
 <main>
@@ -259,7 +259,7 @@
     <button class="step-dot" data-step-dot="1" type="button">② System</button>
     <button class="step-dot" data-step-dot="2" type="button">③ Skills</button>
     <button class="step-dot" data-step-dot="3" type="button">④ Workflow</button>
-    <button class="step-dot" data-step-dot="4" type="button">⑤ Prompt Eng.</button>
+    <button class="step-dot" data-step-dot="4" type="button">⑤ Prompt Engineering</button>
   </div>
 
   <!-- ============ STEP 1 — CONTEXT INJECTION (due tab: con/senza memoria) -->
@@ -1072,9 +1072,14 @@ function renderModelPick() {
   }
   sel.value = (want.indexOf(modelPick.current) !== -1) ? modelPick.current : "";
   setModel5(sel.value);   // modello sparito dall'allowlist → si torna al locale
+  // il budget è del PROVIDER remoto (i SUOI limiti d'uso, non un limite del
+  // laboratorio): lo dichiara nel testo, e lo mostra solo quando è un modelo
+  // remoto quello selezionato — col locale sarebbe rumore fuorviante
   var w = r.window;
-  if (w) bud.textContent =
-    Math.max(0, w.req_limit - w.req) + "/" + w.req_limit + " richieste disponibili nei 60 s";
+  bud.textContent = "";
+  if (w && modelPick.current) bud.textContent =
+    Math.max(0, w.req_limit - w.req) + "/" + w.req_limit +
+    " richieste disponibili su " + (r.provider || "endpoint remoto") + " nei 60 s";
 }
 function refreshRemote() {
   labFetch("/api/model-status", { method: "GET" }, null, 4000).then(function (res) {
