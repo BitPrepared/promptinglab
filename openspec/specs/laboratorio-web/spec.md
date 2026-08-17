@@ -409,3 +409,70 @@ La chat della tappa ⑤ Prompt Engineering SHALL esporre un controllo di tempera
 
 - **WHEN** una richiesta esprime un proprio tetto token
 - **THEN** il gateway lo rispetta entro i limiti complessivi, come per le altre tappe
+
+### Requirement: Simulazione di carico e grafico dei token al secondo
+
+Il progetto SHALL fornire un comando (`make loadtest`) che simula N sessioni concorrenti di ragazzi, ognuna con una conversazione a più tappe sulle chat del gateway, producendo un report di esiti e latenze; le sessioni simulate SHALL risultare nell'osservabilità come sessioni normali. Il gateway SHALL registrare i token di prompt e completion di ogni interazione quando il servizio modello li espone, e il pannello educatore SHALL mostrare un grafico della serie tokens/secondo nel tempo, così che il degrado delle performance sotto carico sia visibile.
+
+#### Scenario: Lancio della simulazione
+
+- **WHEN** si esegue il comando di simulazione con N sessioni e T turni ciascuna
+- **THEN** le conversazioni attraversano il gateway come chat normali e il report mostra esiti e latenze per sessione
+
+#### Scenario: Le sessioni simulate sono osservabili
+
+- **WHEN** la simulazione è in corso o appena terminata
+- **THEN** il pannello educatore mostra le sessioni sintetiche come sessioni normali, con le loro interazioni
+
+#### Scenario: Token registrati per chat
+
+- **WHEN** una chat riceve dal servizio modello gli usage (token di prompt e completion)
+- **THEN** l'interazione registrata li riporta e li persiste
+
+#### Scenario: Grafico dei token al secondo
+
+- **WHEN** l'educatore apre il pannello e ci sono chat con token registrati
+- **THEN** il grafico mostra la serie tokens/secondo nel tempo, senza librerie esterne
+
+### Requirement: Riquadro dei consumi locale vs frontiera
+
+La pagina del laboratorio SHALL mostrare, per la sessione del ragazzo corrente, un riquadro in **forma tabellare** che confronta i consumi stimati dell'attività svolta: per riga le metriche (energia in kWh, acqua in litri, costo in €), per colonna l'esecuzione locale (acqua ≈ 0 perché il calcolo sta nel locale del campo) e la stessa attività su UN modello di frontiera (energia, acqua e costo compresi). Le stime SHALL derivare da un modello di costo dichiarato e semplificato, con costanti raccolte in un unico punto modificabile e fonti indicate.
+
+#### Scenario: Riquadro per la sessione del ragazzo
+
+- **WHEN** il ragazzo riceve una risposta del modello, completa un'elaborazione della skill, o scade l'aggiornamento periodico
+- **THEN** il riquadro tabellare nella pagina si aggiorna con i consumi stimati della propria sessione: locali e sul modello di frontiera, per energia, acqua e costo, calcolati sui token effettivi (chat e scaffold)
+
+#### Scenario: Stime dichiarate e modificabili
+
+- **WHEN** si vuole cambiare un dato di partenza (watt, costo dell'energia, prezzo o acqua del modello di frontiera)
+- **THEN** basta modificare le costanti nell'unico modulo dedicato, senza toccare pagina o gateway
+
+#### Scenario: Sessione senza token registrati
+
+- **WHEN** la sessione selezionata non ha token registrati
+- **THEN** il riquadro non mostra numeri fuorvianti
+
+### Requirement: Backpressure con 429 al degrado del ritmo
+
+Quando la cadenza di generazione recente (token/secondo visti dal gateway) scende sotto la soglia di sovraccarico, il gateway SHALL rispondere alle nuove chat con 429 indicando il tempo di attesa consigliato (`retry_after`). La pagina SHALL avvisare il ragazzo del sovraccarico e ritentare automaticamente la richiesta dopo l'attesa indicata, senza perdere il turno. La soglia MUST NOT scattare a freddo (poche osservazioni) né rimanere bloccata: le osservazioni oltre una certa età non contano, così il cancello si riapre da solo anche se i 429 non producono nuove osservazioni.
+
+#### Scenario: Degrado → 429 con retry_after
+
+- **WHEN** le ultime chat completate sono sotto la soglia token/s e arriva una nuova richiesta
+- **THEN** il gateway risponde 429 con `overload` e `retry_after` (header e corpo), invece di accodare un'altra attesa
+
+#### Scenario: Cadenza sana o freddo → 200
+
+- **WHEN** la cadenza recente è sana oppure non ci sono abbastanza osservazioni recenti
+- **THEN** la chat procede normalmente, nessun 429
+
+#### Scenario: Avviso e retry automatico nella pagina
+
+- **WHEN** la risposta della chat è un 429 di sovraccarico
+- **THEN** la pagina avvisa il ragazzo ("il laboratorio è sovraccarico") e ritenta da sola dopo l'attesa indicata; il turno non si perde e l'attesa resta visibile nel tempo di risposta mostrato
+
+#### Scenario: Self-healing
+
+- **WHEN** le osservazioni lente invecchiano oltre l'età massima
+- **THEN** la soglia torna a non scattare finché nuove chat non dimostrino il contrario: niente lockout permanente
