@@ -433,7 +433,7 @@ tu: «Che fatica! Chi c'era con te? E com'è finita?»</pre>
  * Stesso contratto della CLI; nessuna richiesta esterna. */
 
 var state = { step: 0, modelActive: null, modelName: null, clients: 0, maxStep: 5,
-              remote: null };
+              remote: null, modelCoder: null };
 
 /* ============ Identità client + fetch con header/timeout/errori ============
  * Ogni browser ha un ID stabile (localStorage) inviato come X-Client-Id, così
@@ -614,6 +614,10 @@ function checkModel() {
     state.modelName = res.body.model || null;
     state.clients = res.body.clients || 0;
     state.remote = (res.body && res.body.remote) || null;  // endpoint reale ⑤
+    // coder dedicato alla ⑤ (opzionale): quando c'è, è LUI il «modello locale»
+    // che risponde in questa tappa — la tendina lo dichiara
+    var cd = res.body.coder || {};
+    state.modelCoder = (cd.active && cd.model) ? cd.model : null;
     renderBanner();
     renderModelPick();
     refreshChats();
@@ -1064,9 +1068,12 @@ function renderModelPick() {
       var o = document.createElement("option");
       o.value = m;
       // come si dice «Modello locale», il remoto dichiara il PROVIDER
-      // (es. «Hetzner · Qwen3.6-35B»): da dove arriva la risposta è lezione
+      // (es. «Hetzner · Qwen3.6-35B»): da dove arriva la risposta è lezione.
+      // L'opzione locale dice CHI risponde davvero in ⑤: il coder dedicato
+      // quando è attivo, il modello principale altrimenti
       o.textContent = m ? (r.provider ? r.provider + " · " : "") + shortModelName(m)
-                        : "Modello locale" + (state.modelName ? " (" + state.modelName + ")" : "");
+                        : "Modello locale" + ((state.modelCoder || state.modelName)
+                          ? " (" + (state.modelCoder || state.modelName) + ")" : "");
       sel.appendChild(o);
     });
   }

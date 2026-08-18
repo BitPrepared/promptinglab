@@ -1471,7 +1471,7 @@ class SkillWorkflowPageTest(unittest.TestCase):
         dots = re.findall(r'data-step-dot="(\d)"[^>]*>([^<]+)<', body)
         self.assertEqual([d[0] for d in dots], ["0", "1", "2", "3", "4"])
         labels = " ".join(d[1] for d in dots)
-        for lbl in ("① Context", "② System", "③ Skills", "④ Workflow", "⑤ Prompt Eng."):
+        for lbl in ("① Context", "② System", "③ Skills", "④ Workflow", "⑤ Prompt Engineering"):
             self.assertIn(lbl, labels)
         self.assertIn("maxStep: 5", body)
         # le sezioni seguono lo stesso ordine dei dot

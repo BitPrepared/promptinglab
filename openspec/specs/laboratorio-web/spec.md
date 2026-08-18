@@ -415,6 +415,35 @@ La chat della tappa ⑤ Prompt Engineering SHALL esporre un controllo di tempera
 - **WHEN** una richiesta esprime un proprio tetto token
 - **THEN** il gateway lo rispetta entro i limiti complessivi, come per le altre tappe
 
+### Requirement: Modello coder dedicato alla tappa ⑤
+
+Quando un secondo servizio modello dedicato al codice è attivo (profilo opzionale dell'orchestrazione, es. qwen2.5-coder-1.5b), il gateway SHALL instradare ad esso le chat LOCALI della tappa ⑤; le altre tappe e la skill continuano sul modello principale. Se il servizio dedicato non è attivo o irraggiungibile, la ⑤ SHALL ricadere sul modello principale senza errori visibili al ragazzo (fallback trasparente, anche a richiesta già partita se la connessione cade). L'opzione «Modello locale» del selettore della ⑤ SHALL dichiarare quale modello locale risponde davvero (il dedicato quando attivo, il principale altrimenti).
+
+#### Scenario: Instradamento della ⑤
+
+- **WHEN** la ⑤ manda una chat locale col servizio dedicato attivo
+- **THEN** la richiesta arriva al modello dedicato (coi parametri llama di sempre), e il principale non viene toccato
+
+#### Scenario: Le altre tappe non cambiano percorso
+
+- **WHEN** una chat delle tappe ①–④ arriva col servizio dedicato attivo
+- **THEN** viene servita dal modello principale, come sempre
+
+#### Scenario: Fallback a freddo
+
+- **WHEN** il servizio dedicato non è attivo
+- **THEN** la ⑤ usa il modello principale senza alcun errore per il ragazzo
+
+#### Scenario: Fallback a metà richiesta
+
+- **WHEN** il servizio dedicato accetta la connessione ma la chiude senza rispondere
+- **THEN** il turno non si perde: la richiesta riparte sul modello principale e la risposta arriva come JSON
+
+#### Scenario: Etichetta onesta nella tendina
+
+- **WHEN** il selettore della ⑤ mostra l'opzione locale
+- **THEN** dichiara il nome del modello che risponde davvero in quella tappa
+
 ### Requirement: Simulazione di carico e grafico dei token al secondo
 
 Il progetto SHALL fornire un comando (`make loadtest`) che simula N sessioni concorrenti di ragazzi, ognuna con una conversazione a più tappe sulle chat del gateway, producendo un report di esiti e latenze; le sessioni simulate SHALL risultare nell'osservabilità come sessioni normali. Il gateway SHALL registrare i token di prompt e completion di ogni interazione quando il servizio modello li espone, e il pannello educatore SHALL mostrare un grafico della serie tokens/secondo nel tempo, così che il degrado delle performance sotto carico sia visibile. Il grafico SHALL rappresentare la serie aggregata per fasce temporali come DUE linee — la media e il minimo di ogni fascia — senza il punta-punta di ogni singola chat raccolta. L'asse del tempo del grafico SHALL essere ancorato all'istante corrente e avanzare anche in assenza di nuove chat; la finestra del grafico SHALL corrispondere alla finestra temporale selezionata nel pannello (5m/10m/15m/30m/tutto); i 429 di backpressure SHALL essere rappresentati nel grafico come serie distinta da quella delle chat completate.
@@ -458,6 +487,8 @@ Il progetto SHALL fornire un comando (`make loadtest`) che simula N sessioni con
 
 La pagina del laboratorio SHALL mostrare, per la sessione del ragazzo corrente, un riquadro in **forma tabellare** che confronta i consumi stimati dell'attività svolta: per riga le metriche (energia in kWh, acqua in litri, costo in €), per colonna l'esecuzione locale (acqua ≈ 0 perché il calcolo sta nel locale del campo) e la stessa attività su UN modello di frontiera (energia, acqua e costo compresi). Le stime SHALL derivare da un modello di costo dichiarato e semplificato, con costanti raccolte in un unico punto modificabile e fonti indicate.
 
+Quando la sessione contiene anche interazioni su un endpoint remoto, il confronto locale-vs-frontiera SHALL essere calcolato sulle SOLE interazioni locali (i secondi e i token del data center remoto non sono consumi del mini PC). Quando il ragazzo si trova nella tappa ⑤ con un modello remoto selezionato, il riquadro SHALL mostrare DUE tabelle: la prima per il modello scelto — i token REALI dell'usage e il costo API calcolato a LISTINO STANDARD del modello, mai a prezzo sperimentale/scontato dell'offerta (il fatto che l'endpoint sia gratis oggi non è la lezione) — e la seconda per la sessione in locale (il confronto locale-vs-frontiera di sempre, calcolato sulle sole interazioni locali). Anche per i modelli remoti le costanti di prezzo SHALL vivere nello stesso unico modulo delle altre. Il banner dello stato del modello e il riquadro dei consumi SHALL stare in fondo alla pagina, dopo il riquadro di input della tappa e prima della navigazione (non in testa, dove spingevano giù spiegazione e chat).
+
 #### Scenario: Riquadro per la sessione del ragazzo
 
 - **WHEN** il ragazzo riceve una risposta del modello, completa un'elaborazione della skill, o scade l'aggiornamento periodico
@@ -465,13 +496,43 @@ La pagina del laboratorio SHALL mostrare, per la sessione del ragazzo corrente, 
 
 #### Scenario: Stime dichiarate e modificabili
 
-- **WHEN** si vuole cambiare un dato di partenza (watt, costo dell'energia, prezzo o acqua del modello di frontiera)
+- **WHEN** si vuole cambiare un dato di partenza (watt, costo dell'energia, prezzo o acqua del modello di frontiera, listino di un modello remoto)
 - **THEN** basta modificare le costanti nell'unico modulo dedicato, senza toccare pagina o gateway
 
 #### Scenario: Sessione senza token registrati
 
 - **WHEN** la sessione selezionata non ha token registrati
 - **THEN** il riquadro non mostra numeri fuorvianti
+
+#### Scenario: Sessione mista: il confronto resta onesto
+
+- **WHEN** la sessione ha chat locali e chat su endpoint remoto
+- **THEN** la tabella locale-vs-frontiera è calcolata solo sulle interazioni locali: i consumi remoti non gonfiano i secondi/energia «qui, sul mini PC»
+
+#### Scenario: Tappa ⑤ con modello remoto: due tabelle
+
+- **WHEN** il ragazzo è nella tappa ⑤ con un modello remoto selezionato
+- **THEN** il riquadro mostra la tabella del modello scelto (token reali in ingresso/uscita e costo a listino) e la tabella della sessione in locale (confronto locale-vs-frontiera)
+
+#### Scenario: Modello scelto senza risposte ancora
+
+- **WHEN** il ragazzo ha selezionato un modello remoto ma non ha ancora ricevuto risposte da esso
+- **THEN** la prima tabella lo dice senza mostrare numeri fuorvianti, e resta visibile la tabella della sessione in locale
+
+#### Scenario: Costo a listino standard, mai sperimentale
+
+- **WHEN** la tabella del modello scelto calcola il costo API
+- **THEN** usa il listino standard dichiarato per quel modello (costanti nel modulo unico), non il prezzo dell'offerta sperimentale (che sarebbe € 0)
+
+#### Scenario: Stato in fondo alla pagina
+
+- **WHEN** il ragazzo scorre una qualunque tappa
+- **THEN** il banner dello stato del modello e il riquadro dei consumi stanno dopo il riquadro di input della tappa e prima della navigazione, non in testa alla pagina
+
+#### Scenario: Tornando alle altre tappe
+
+- **WHEN** il ragazzo lascia la tappa ⑤ o riporta il selettore sul modello locale
+- **THEN** il riquadro torna alla sola forma di confronto locale-vs-frontiera (calcolata sulle sole interazioni locali)
 
 ### Requirement: Backpressure con 429 al degrado del ritmo
 

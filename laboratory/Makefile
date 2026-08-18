@@ -22,13 +22,14 @@ TURNS   ?= 4
 RETRY   ?= 0
 
 .DEFAULT_GOAL := help
-.PHONY: help up pi-up demo down rebuild logs admin open status ps test clean clean-sessions loadtest pull
+.PHONY: help up pi-up up-coder demo down rebuild logs admin open status ps test clean clean-sessions loadtest pull
 
 help:  ## mostra questo aiuto
 	@echo "Laboratorio web — target disponibili:"
 	@echo "  make up        avvia col MODELLO (MODEL_FILE=$(MODEL_FILE))  [default con modello]"
 	@echo "  make demo      avvia in DEMO (mock, senza modello — chat 1/2/4 off, skill on)"
 	@echo "  make pi-up     come up, ma per host Pi 3 (override: 0.5B obbligatorio)"
+	@echo "  make up-coder  come up + coder dedicato alla ⑤ (mini PC; il Pi 3 non lo attiva)"
 	@echo "  make rebuild   ricostruisce le immagini (codice Python) e riparte col modello"
 	@echo "  make down      ferma e rimuove tutti i container (anche llama)"
 	@echo "  make clean-sessions  azzera lo storico delle sessioni (ferma il gateway)"
@@ -50,6 +51,9 @@ up:  ## avvia col modello (richiede il GGUF in models/)
 
 pi-up:  ## avvia col modello per host Pi 3 (0.5B obbligatorio, vedi docker-compose.pi.yml)
 	$(COMPOSE) -f docker-compose.yml -f docker-compose.pi.yml $(PROFILE) up
+
+up-coder:  ## come up + coder dedicato alla ⑤ (2×~1,9 GB: mini PC, NON Pi 3)
+	MODEL_FILE=$(MODEL_FILE) $(COMPOSE) --profile model --profile coder up
 
 demo:  ## avvia in demo (mock, senza modello)
 	$(COMPOSE) up web gateway skill

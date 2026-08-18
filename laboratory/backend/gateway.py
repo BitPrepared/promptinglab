@@ -81,6 +81,11 @@ LLAMA_URL = os.environ.get("LLAMA_URL", "http://localhost:8081").rstrip("/")
 HETZNER_URL = os.environ.get(
     "HETZNER_URL", "https://inference.hetzner.com/api/v1").rstrip("/")
 HETZNER_API_KEY = os.environ.get("HETZNER_API_KEY")
+# Coder dedicato alla ⑤ (profilo compose opzionale «coder»): un secondo
+# llama-server con qwen2.5-coder-1.5b. Deciso sul RAM misurato: 2×~1,9 GB di
+# peak (spike/REPORT.md) entrano larghi nel mini PC del campo (24 GB); sul
+# Pi 3 il profilo non si attiva e tutto resta com'è.
+CODER_URL = os.environ.get("CODER_URL", "http://localhost:8082").rstrip("/")
 GATEWAY_PORT = int(os.environ.get("GATEWAY_PORT", "8090"))
 LAB_SESSIONS_DIR = os.environ.get("LAB_SESSIONS_DIR") or os.path.join(_HERE, "..", "sessions")
 LAB_ACTIVE_WINDOW = int(os.environ.get("LAB_ACTIVE_WINDOW", "300"))
@@ -158,6 +163,51 @@ _KV_REMOTE_TRIPPED = "remote_tripped"
 _KV_REMOTE_REASON = "remote_trip_reason"
 
 _MODEL_CACHE: dict = {"name": None, "ts": 0.0}
+
+# --- coder dedicato alla tappa ⑤ (profilo opzionale) -------------------------
+_CODER_CACHE: dict = {"ok": None, "ts": 0.0, "name": None, "name_ts": 0.0}
+
+
+def _coder_reachable() -> bool:
+    """Il coder della ⑤ è attivo? Probe con cache breve (30 s): le chat LOCALI
+    della tappa ⑤ gli vengono instradate; assente → percorso di sempre, senza
+    errori per il ragazzo (pattern auto, come LAB_BACKEND della skill)."""
+    now = time.time()
+    if _CODER_CACHE["ok"] is not None and now - _CODER_CACHE["ts"] < 30:
+        return _CODER_CACHE["ok"]
+    ok = False
+    try:
+        with urllib.request.urlopen(CODER_URL + "/health", timeout=_STATUS_TIMEOUT) as r:
+            ok = 200 <= r.status < 300
+    except Exception:  # noqa: BLE001
+        ok = False
+    _CODER_CACHE["ok"] = ok
+    _CODER_CACHE["ts"] = now
+    return ok
+
+
+def _coder_status() -> dict:
+    """Stato del coder per `/api/model-status`: attivo e nome del modello
+    (l'opzione «Modello locale» della ⑤ dichiara CHI risponde davvero)."""
+    if not _coder_reachable():
+        return {"active": False, "model": None}
+    now = time.time()
+    if _CODER_CACHE["name"] is None or now - _CODER_CACHE["name_ts"] >= 60:
+        name = None
+        try:
+            with urllib.request.urlopen(CODER_URL + "/props", timeout=_STATUS_TIMEOUT) as r:
+                p = json.loads(r.read().decode("utf-8"))
+            g = p.get("general") or {}
+            name = g.get("name") or p.get("model_name")
+            if not name:
+                mp = p.get("model_path") or p.get("model")
+                if mp:
+                    name = os.path.basename(str(mp))
+        except Exception:  # noqa: BLE001
+            name = None
+        _CODER_CACHE["name"] = name
+        _CODER_CACHE["name_ts"] = now
+    return {"active": True, "model": _CODER_CACHE["name"]}
 
 
 def _clamp(v, lo, hi):
@@ -729,6 +779,11 @@ class Handler(BaseHTTPRequestHandler):
             # lettura lenta oltre il timeout (non è URLError): JSON, non HTML
             self._send_json(504, {"error": "la skill non ha risposto in tempo"})
             return
+        except OSError:
+            # connessione persa a metà (RemoteDisconnected & co.)
+            self._send_json(502, {"error": "servizio skill non raggiungibile "
+                                           "(connessione persa)"})
+            return
         if is_scaffold and self._meta:
             self._meta["out_len"] = len(data)
             self._meta["out_text"] = data.decode("utf-8", "replace")
@@ -793,39 +848,60 @@ class Handler(BaseHTTPRequestHandler):
                  "retry_after": _CHAT_RETRY_AFTER_S},
                 extra={"Retry-After": str(_CHAT_RETRY_AFTER_S)})
             return
-        req = urllib.request.Request(
-            LLAMA_URL + "/v1/chat/completions", data=data,
-            headers={"Content-Type": "application/json"}, method="POST")
-        try:
-            with urllib.request.urlopen(req, timeout=_PROXY_TIMEOUT) as r:
-                payload = json.loads(r.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:  # HTTPError è sotto URLError
-            # D7: il body d'errore ricevuto È la response della chiamata
-            err_body = e.read().decode("utf-8", "replace")
-            if self._meta:
-                self._meta["trace"] = {"request": body, "response": err_body}
-            self._send_json(502, {"error": f"errore modello: {e.code} {e.reason}",
-                                  "model_active": False,
-                                  "trace": {"request": body, "response": err_body}})
-            return
-        except urllib.error.URLError:
-            if self._meta:
-                self._meta["trace"] = {"request": body}  # partita, senza risposta
-            self._send_json(503, {"error": "modello non attivo", "model_active": False,
-                                  "trace": {"request": body}})
-            return
-        except TimeoutError:
-            # lettura lenta oltre il timeout (non è URLError, v. _PROXY_TIMEOUT):
-            # risposta JSON onesta, la riga resta registrata
-            if self._meta:
-                self._meta["trace"] = {"request": body}
-            self._send_json(504, {"error": "il modello locale non ha risposto "
-                                           "in tempo (sovraccarico?) — riprova",
-                                  "model_active": False,
-                                  "trace": {"request": body}})
-            return
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            self._send_json(502, {"error": "risposta modello imprevista", "model_active": False})
+        # target: la ⑤ usa il CODER dedicato se attivo (profilo opzionale),
+        # con fallback trasparente sul modello principale (pattern auto). Le
+        # altre tappe non cambiano percorso.
+        targets = [LLAMA_URL]
+        if str(self._step or "") == "5" and _coder_reachable():
+            targets = [CODER_URL, LLAMA_URL]
+        payload = None
+        for i, target in enumerate(targets):
+            req = urllib.request.Request(
+                target + "/v1/chat/completions", data=data,
+                headers={"Content-Type": "application/json"}, method="POST")
+            try:
+                with urllib.request.urlopen(req, timeout=_PROXY_TIMEOUT) as r:
+                    payload = json.loads(r.read().decode("utf-8"))
+                break
+            except urllib.error.HTTPError as e:  # HTTPError è sotto URLError
+                # D7: il body d'errore ricevuto È la response della chiamata
+                # (un HTTP error significa «il server ha risposto»: niente fallback)
+                err_body = e.read().decode("utf-8", "replace")
+                if self._meta:
+                    self._meta["trace"] = {"request": body, "response": err_body}
+                self._send_json(502, {"error": f"errore modello: {e.code} {e.reason}",
+                                      "model_active": False,
+                                      "trace": {"request": body, "response": err_body}})
+                return
+            except TimeoutError:
+                # lettura lenta oltre il timeout (non è URLError, v. _PROXY_TIMEOUT):
+                # risposta JSON onesta, la riga resta registrata. Niente fallback:
+                # riprovare raddoppierebbe l'attesa del ragazzo. (Va PRIMA della
+                # clausola OSError: TimeoutError ne è sottoclasse.)
+                if self._meta:
+                    self._meta["trace"] = {"request": body}
+                self._send_json(504, {"error": "il modello locale non ha risposto "
+                                               "in tempo (sovraccarico?) — riprova",
+                                      "model_active": False,
+                                      "trace": {"request": body}})
+                return
+            except (urllib.error.URLError, OSError) as e:
+                # URLError ⊂ OSError, e anche connessioni perse a metà
+                # (RemoteDisconnected & co.) arrivano qui: se il coder cade
+                # si riprova sul principale; sull'ultimo target è lui, spento
+                if i + 1 >= len(targets):
+                    if self._meta:
+                        self._meta["trace"] = {"request": body}  # partita, senza risposta
+                    self._send_json(503, {"error": f"modello non attivo "
+                                                   f"({getattr(e, 'reason', e)})",
+                                          "model_active": False,
+                                          "trace": {"request": body}})
+                    return
+                continue  # cade il coder → si riprova sul principale
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                self._send_json(502, {"error": "risposta modello imprevista", "model_active": False})
+                return
+        if payload is None:  # irraggiungibile in questo punto, difensivo
             return
         try:
             reply = payload["choices"][0]["message"]["content"]
@@ -965,6 +1041,16 @@ class Handler(BaseHTTPRequestHandler):
                                            "riprova, oppure torna al modello locale",
                                   "remote_error": True, "trace": tr})
             return
+        except OSError as e:
+            # connessione persa a metà (RemoteDisconnected & co.): JSON onesto,
+            # mai un thread morto senza risposta
+            tr = {"request": body}
+            if self._meta:
+                self._meta["trace"] = tr
+            self._send_json(503, {"error": f"connessione con l'endpoint reale "
+                                           f"persa ({e}) — riprova",
+                                  "remote_error": True, "trace": tr})
+            return
         except (json.JSONDecodeError, UnicodeDecodeError):
             self._send_json(502, {"error": "risposta endpoint reale imprevista",
                                   "remote_error": True})
@@ -1012,12 +1098,14 @@ class Handler(BaseHTTPRequestHandler):
 
     # --- model-status -----------------------------------------------------
     def _model_status(self) -> None:
-        """GET /api/model-status -> {model_active, model?, clients, remote} (200)."""
+        """GET /api/model-status -> {model_active, model?, clients, remote,
+        coder} (200): `coder` dice se la ⑤ ha il suo modello dedicato."""
         active = _llama_reachable(LLAMA_URL)
         clients = _TRACKER.active_list(LAB_ACTIVE_WINDOW)["total"]
         model = _llama_model_name() if active else None
         self._send_json(200, {"model_active": active, "model": model,
-                              "clients": clients, "remote": _REMOTE.status()})
+                              "clients": clients, "remote": _REMOTE.status(),
+                              "coder": _coder_status()})
 
     # --- comandi educatore sull'endpoint reale -----------------------------
     def _admin_remote(self, raw: bytes) -> None:

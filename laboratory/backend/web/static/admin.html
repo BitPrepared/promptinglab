@@ -167,7 +167,7 @@ function short(cid) { return cid.length > 14 ? cid.slice(0, 14) + "…" : cid; }
  * pannello, cambiando la grafica — regressione osservata al campo. */
 function esc(s) { var d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
 function stepName(step) {
-  return ({ "1": "① Context", "2": "② System", "3": "③ Skills", "4": "④ Workflow", "5": "⑤ Prompt Eng." })[step] || ("tappa " + (step || "?"));
+  return ({ "1": "① Context", "2": "② System", "3": "③ Skills", "4": "④ Workflow", "5": "⑤ Prompt Engineering" })[step] || ("tappa " + (step || "?"));
 }
 function winLabel() {
   return WIN === "all" ? "tutto lo storico" : "ultimi " + (WIN / 60) + " min";

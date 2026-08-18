@@ -36,6 +36,9 @@ services:
     environment:
       SKILL_URL: http://skill:8080
       LLAMA_URL: http://llama:8081
+      # coder dedicato alla ⑤ (profilo opzionale «coder»): se non è attivo,
+      # la ⑤ usa il modello principale come sempre (fallback automatico)
+      CODER_URL: http://llama-coder:8082
       GATEWAY_PORT: "8090"
       # Osservabilità: sessioni (sqlite3, sessions.db) persistite nel volume.
       LAB_SESSIONS_DIR: /app/sessions
@@ -86,6 +89,28 @@ services:
       -t 4 -c 2048 --temp 0.2
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8081/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # Coder dedicato alla tappa ⑤ (change endpoint-remoto-hetzner, feedback di
+  # campo): qwen2.5-coder-1.5b per generare HTML/CSS. OPZIONALE — 2×~1,9 GB
+  # di peak (spike/REPORT.md): il mini PC del campo (24 GB) li tiene larghi,
+  # sul Pi 3 il profilo NON si attiva (make up normale). Il gateway manda qui
+  # le chat LOCALI della ⑤ quando lo vede attivo, altrimenti fallback sul
+  # modello principale: nessun errore per il ragazzo. Porta NON pubblicata:
+  # è una risorsa interna, si parla solo via gateway.
+  llama-coder:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    profiles: ["coder"]
+    volumes:
+      - ./models:/models:ro
+    command: >
+      -m /models/${CODER_FILE:-qwen2.5-coder-1.5b-instruct-q4_k_m.gguf}
+      --host 0.0.0.0 --port 8082
+      -t 4 -c 2048 --temp 0.2
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8082/health')"]
       interval: 10s
       timeout: 3s
       retries: 5

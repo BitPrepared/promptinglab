@@ -86,6 +86,28 @@ cd laboratory
 python3 -m unittest discover -s tests
 ```
 
+## Modello coder dedicato alla tappa ⑤ (opzionale)
+
+La ⑤ genera codice HTML/CSS: con `make up-coder` parte un secondo
+llama-server con **qwen2.5-coder-1.5b** e il gateway instrada lì le chat
+**locali** della ⑤. Le altre tappe e la skill continuano sul modello
+principale, che non cambia.
+
+```bash
+# scarica il GGUF del coder come gli altri (models/), poi:
+make up-coder       # = make up + profilo coder
+```
+
+- **RAM**: 2 istanze da ~1,9 GB di peak (misurati, `spike/REPORT.md`) =
+  ~3,8 GB — il mini PC del campo (24 GB verificati) li tiene con ampio
+  margine; sul **Pi 3 il profilo non si attiva** e tutto resta com'è.
+- **Fallback automatico**: se il coder non è attivo (`make up` normale, o il
+  processo cade a metà richiesta), la ⑤ usa il modello principale senza
+  errori per il ragazzo — pattern `auto`, come il backend della skill.
+- La tendina della ⑤ dichiara chi risponde: col coder attivo l'opzione dice
+  «Modello locale (qwen2.5-coder-1.5b)».
+- Cambiare il file del coder: `CODER_FILE=... make up-coder`.
+
 ## Endpoint reale in tappa ⑤ (Hetzner Inference API) — opzionale
 
 La tappa ⑤ può confrontare il modello locale del campo con modelli open-weight

@@ -873,5 +873,207 @@ class AllowlistCoherenceTest(unittest.TestCase):
         self.assertNotIn("Kimi-K2.7-Code", gateway._REMOTE_MODELS)
 
 
+def _llama_like_handler(rec: _HetznerRec, name: str | None = None,
+                         drop_conn: bool = False):
+    """Fake llama-server: registra l'ultima richiesta; `name` risponde ai
+    probe /health e /props (per model-status), `drop_conn` chiude la socket
+    senza rispondere (connessione persa a metà richiesta)."""
+    class H(BaseHTTPRequestHandler):
+        def _json(self, code: int, obj: dict) -> None:
+            b = json.dumps(obj).encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+
+        def do_GET(self) -> None:  # noqa: N802
+            if self.path == "/health":
+                self._json(200, {"status": "ok"})
+            elif self.path == "/props":
+                self._json(200, {"general": {"name": name or "fake"}})
+            else:
+                self._json(404, {})
+
+        def do_POST(self):  # noqa: N802
+            n = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(n) if n else b""
+            rec.last_body = json.loads(raw.decode("utf-8")) if raw else {}
+            rec.last_auth = self.headers.get("Authorization")
+            rec.requests.append(time.time())
+            if self.path.endswith("/chat/completions"):
+                if drop_conn:
+                    self.close_connection = True
+                    self.connection.close()
+                    return
+                payload = dict(rec.payload)
+                payload["usage"] = _fake_usage_local(rec.last_body or {},
+                                                     len(payload["choices"][0]
+                                                         ["message"]["content"]))
+                self._json(rec.status, payload)
+            else:
+                self._json(404, {})
+
+        def log_message(self, fmt, *args) -> None:
+            pass
+
+    return H
+
+
+def _fake_usage_local(body: dict, reply_len: int) -> dict:
+    prompt_tokens = sum(len(m.get("content", "")) for m in body.get("messages", []))
+    return {"prompt_tokens": prompt_tokens, "completion_tokens": reply_len}
+
+
+class CoderRoutingTest(unittest.TestCase):
+    """Modello coder dedicato alla ⑤ (decisione confermata dall'educatore
+    sul RAM reale del mini PC, 24 GB: 2×~1,9 GB di peak ci stanno larghi):
+    le chat LOCALI della ⑤ vanno al coder quando attivo, con fallback
+    trasparente sul modello principale; le altre tappe non cambiano percorso."""
+
+    def setUp(self) -> None:
+        # fake llama principale + fake coder, porte effimere
+        self.rec_main = _HetznerRec()
+        self.rec_coder = _HetznerRec()
+        self.rec_main.payload["choices"][0]["message"]["content"] = "dal principale"
+        self.rec_coder.payload["choices"][0]["message"]["content"] = "dal coder"
+        self.main = ThreadingHTTPServer(
+            ("127.0.0.1", 0), _llama_like_handler(self.rec_main, "qwen2.5-1.5b"))
+        self.coder = ThreadingHTTPServer(
+            ("127.0.0.1", 0), _llama_like_handler(self.rec_coder, "qwen2.5-coder-1.5b"))
+        for srv in (self.main, self.coder):
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self._orig = (gateway.LLAMA_URL, gateway.CODER_URL, gateway._TRACKER,
+                      dict(gateway._CODER_CACHE))
+        gateway.LLAMA_URL = f"http://127.0.0.1:{self.main.server_address[1]}"
+        gateway.CODER_URL = f"http://127.0.0.1:{self.coder.server_address[1]}"
+        gateway._TRACKER = gateway.SessionTracker(None)
+        gateway._CODER_CACHE.clear()
+        gateway._CODER_CACHE.update({"ok": None, "ts": 0.0, "name": None, "name_ts": 0.0})
+        self.gw = ThreadingHTTPServer(("127.0.0.1", 0), gateway.Handler)
+        self.gw_url = f"http://127.0.0.1:{self.gw.server_address[1]}"
+        threading.Thread(target=self.gw.serve_forever, daemon=True).start()
+
+    def tearDown(self) -> None:
+        (gateway.LLAMA_URL, gateway.CODER_URL, gateway._TRACKER,
+         gateway._CODER_CACHE) = self._orig
+        gateway._CODER_CACHE.update(self._orig[3])
+        self.gw.shutdown(); self.gw.server_close()
+        self.main.shutdown(); self.main.server_close()
+        self.coder.shutdown(); self.coder.server_close()
+
+    def _post(self, body: dict, headers: dict | None = None) -> tuple[int, dict]:
+        req = urllib.request.Request(
+            self.gw_url + "/api/chat", data=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json", **(headers or {})},
+            method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.status, json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read().decode("utf-8"))
+
+    def _chat(self, text: str) -> dict:
+        return {"messages": [{"role": "user", "content": text}]}
+
+    def test_step5_local_goes_to_coder(self) -> None:
+        status, body = self._post(self._chat("card"), {"X-Step": "5"})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["reply"], "dal coder")
+        self.assertEqual(self.rec_coder.last_body["max_tokens"], 768)  # tetto ⑤
+        self.assertEqual(self.rec_coder.last_body["repeat_penalty"], 1.1)  # llama-family
+        self.assertIsNone(self.rec_main.last_body)   # il principale non è toccato
+
+    def test_other_steps_stay_on_main(self) -> None:
+        status, body = self._post(self._chat("ciao"), {"X-Step": "1"})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["reply"], "dal principale")
+        self.assertIsNone(self.rec_coder.last_body)
+
+    def test_coder_absent_fallback_on_main(self) -> None:
+        """Profilo «coder» non attivo (Pi 3, o make up normale): la ⑤ resta
+        sul modello principale, nessun errore per il ragazzo."""
+        self.coder.shutdown(); self.coder.server_close()
+        gateway._CODER_CACHE["ok"] = None  # invalida la cache del probe
+        status, body = self._post(self._chat("card"), {"X-Step": "5"})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["reply"], "dal principale")
+
+    def test_coder_dies_midflight_falls_back(self) -> None:
+        """Il coder accetta la connessione ma la chiude senza rispondere
+        (crash/kill a metà): fallback trasparente sul principale, JSON al
+        ragazzo — mai un thread morto (rete OSError, non solo URLError)."""
+        self.coder.shutdown(); self.coder.server_close()
+        dying = ThreadingHTTPServer(
+            ("127.0.0.1", 0),
+            _llama_like_handler(self.rec_coder, "coder-che-muore", drop_conn=True))
+        threading.Thread(target=dying.serve_forever, daemon=True).start()
+        gateway.CODER_URL = f"http://127.0.0.1:{dying.server_address[1]}"
+        gateway._CODER_CACHE["ok"] = None  # probe: la porta risponde (health ok)
+        try:
+            status, body = self._post(self._chat("card"), {"X-Step": "5"})
+        finally:
+            dying.shutdown(); dying.server_close()
+        self.assertEqual(status, 200)
+        self.assertEqual(body["reply"], "dal principale")  # cadde, ma il turno è salvo
+
+    def test_main_disconnect_is_json_not_crash(self) -> None:
+        """ Bersaglio unico che chiude a metà: 503 JSON onesto (niente thread
+        morti) — la regressione di campo resta coperta anche senza fallback."""
+        self.main.shutdown(); self.main.server_close()
+        dying = ThreadingHTTPServer(
+            ("127.0.0.1", 0), _llama_like_handler(self.rec_main, "x", drop_conn=True))
+        threading.Thread(target=dying.serve_forever, daemon=True).start()
+        gateway.LLAMA_URL = f"http://127.0.0.1:{dying.server_address[1]}"
+        gateway._CODER_CACHE["ok"] = False  # niente coder: bersaglio unico
+        try:
+            status, body = self._post(self._chat("ciao"), {"X-Step": "1"})
+        finally:
+            dying.shutdown(); dying.server_close()
+        self.assertEqual(status, 503)
+        self.assertFalse(body["model_active"])
+        self.assertIn("modello non attivo", body["error"])
+
+    def test_model_status_declares_coder(self) -> None:
+        """L'opzione «Modello locale» della ⑤ dichiara CHI risponde: col coder
+        attivo, il suo nome (da /props), non quello del principale."""
+        with urllib.request.urlopen(self.gw_url + "/api/model-status", timeout=5) as r:
+            body = json.loads(r.read().decode("utf-8"))
+        self.assertTrue(body["coder"]["active"])
+        self.assertEqual(body["coder"]["model"], "qwen2.5-coder-1.5b")
+        # assente: active false, nessun nome
+        self.coder.shutdown(); self.coder.server_close()
+        gateway._CODER_CACHE["ok"] = None
+        with urllib.request.urlopen(self.gw_url + "/api/model-status", timeout=5) as r:
+            body = json.loads(r.read().decode("utf-8"))
+        self.assertFalse(body["coder"]["active"])
+        self.assertIsNone(body["coder"]["model"])
+
+
+class CoderConfigTest(unittest.TestCase):
+    """Contratto strutturale del profilo coder: compose, Makefile, pagina."""
+
+    def test_compose_coder_profile(self) -> None:
+        compose = _read("docker-compose.yml")
+        self.assertIn("llama-coder:", compose)
+        self.assertIn('profiles: ["coder"]', compose)
+        self.assertIn("qwen2.5-coder-1.5b-instruct-q4_k_m.gguf", compose)
+        # il gateway lo conosce; la porta NON è pubblicata in LAN
+        gw = compose.split("gateway:")[1].split("\n\n  ")[0]
+        self.assertIn("CODER_URL: http://llama-coder:8082", gw)
+        coder = compose.split("llama-coder:")[1]
+        self.assertNotIn("8082:8082", coder)
+
+    def test_makefile_up_coder_target(self) -> None:
+        mk = _read("Makefile")
+        self.assertIn("up-coder:", mk)
+        self.assertIn("--profile coder", mk)
+
+    def test_page_local_option_declares_who_answers(self) -> None:
+        body = _read("backend/web/static/index.html")
+        self.assertIn("modelCoder", body)
+        self.assertIn("state.modelCoder || state.modelName", body)
+
+
 if __name__ == "__main__":
     unittest.main()
