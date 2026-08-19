@@ -5,20 +5,26 @@ estivo) i concetti fondamenti dell'ingegneria dei prompt: contesto e memoria,
 system prompt, skill, workflow — con un modello linguistico locale, in LAN,
 senza Internet e senza account.
 
-Il percorso è una pagina web a cinque tappe — ① Context Injection, ② System
-Prompt, ③ Skills, ④ Workflow, ⑤ Prompt Engineering.
+Il percorso guidato è una pagina web a quattro tappe — ① Context Injection,
+② System Prompt, ③ Skills, ④ Workflow — più il **laboratorio codice** su
+pagina dedicata (`code.html`): il modello genera una pagina HTML completa e
+il ragazzo se la porta via. Il laboratorio codice è aperto solo dalle
+postazioni che l'educatore abilita.
 
 ## Architettura in tre righe
 
 ```
 browser dei ragazzi ──▶ nginx (statici + /api/*) ──▶ gateway (business logic)
                                                         ├── skill service
-                                                        └── llama-server (modello)
+                                                        ├── llama-server (modello, tappe ①–④)
+                                                        └── llama-coder (coder dedicato, laboratorio codice)
 ```
 
 Tutto gira su un mini PC (o un Raspberry Pi 3 host con modello 0.5B) in LAN
 cablata; i ragazzi usano browser kiosk su Raspberry Pi 3. Zero dipendenze
-esterne a runtime: solo Python stdlib.
+esterne a runtime: solo Python stdlib. Il coder dedicato (`qwen2.5-coder-1.5b`,
+~1,9 GB di picco) esiste solo sul mini PC: sul Pi 3 non si attiva e la
+generazione ricade sul modello principale (fallback dichiarato in pagina).
 
 ## Provarlo su una macchina sola
 
@@ -39,26 +45,31 @@ scaricare nulla. Il pannello educatore sta su <http://localhost:8090/admin>.
 
 ### Percorso 2 — con il modello vero
 
-Le dipendenze da scaricare sono due: l'immagine Docker di llama.cpp e il
-modello (un file GGUF).
+Le dipendenze da scaricare sono l'immagine Docker di llama.cpp e i modelli
+(file GGUF).
 
 ```sh
 cd laboratory
 make pull      # immagine llama.cpp (server CPU, compatibile OpenAI)
 
-# il modello: GGUF quantizzato q4_k_m da HuggingFace, in laboratory/models/
+# i modelli: GGUF quantizzati q4_k_m da HuggingFace, in laboratory/models/
 #   1.5B (consigliato, ~1 GB)  — target del mini PC
 curl -L -o models/qwen2.5-1.5b-instruct-q4_k_m.gguf \
   "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf"
 #   0.5B (più leggero, per Raspberry Pi 3)
 curl -L -o models/qwen2.5-0.5b-instruct-q4_k_m.gguf \
   "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+#   coder 1.5B (~1 GB) — per il laboratorio codice, richiesto da make up
+curl -L -o models/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf \
+  "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/main/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf"
 
-make up        # avvia lo stack col modello (MODEL_FILE=... per cambiare GGUF)
+make up        # UN comando, DUE llama: main (tappe ①–④) + coder (laboratorio codice)
 ```
 
 Apri <http://localhost:8090> e rifai le tappe col modello vero; il banner in
-pagina dice se il modello è attivo.
+pagina dice se il modello è attivo. (`MODEL_FILE=...`/`CODER_FILE=...` per
+cambiare GGUF; senza il GGUF del coder `make up` non parte — il fallback
+senza coder resta `make demo`.)
 
 ### Comandi utili
 
@@ -93,6 +104,19 @@ di partenza (watt, €/kWh, prezzo e acqua del modello di frontiera) stanno in
 un unico file modificabile, `laboratory/backend/costi.py`. La lezione: in
 locale non hai modelli di frontiera, ma ogni domanda ti costa quasi niente;
 la frontiera la paghi in acqua e denaro anche per le domande semplici.
+
+## Laboratorio codice (`code.html`)
+
+La vecchia tappa ⑤ Prompt Engineering è un laboratorio autonomo su pagina
+dedicata: il modello scrive una **pagina HTML completa** — CSS incluso, in un
+**file unico** — e il ragazzo se la porta via con **Copia**, **Scarica .html**
+o **Apri**, con anteprima in sandbox. Dalla pagina del percorso (①–④) non ci
+sono link: l'accesso lo dà l'educatore, che abilita gli IP delle postazioni
+dal pannello `/admin` (allowlist persistente, vale da subito senza riavvii).
+
+Policy nel gateway: tetto dedicato di 4096 token, una generazione alla volta
+(429 con retry alle concorrenti), niente backpressure su questa tappa. I
+dettagli stanno in [`laboratory/README.md`](laboratory/README.md).
 
 ## Test
 
