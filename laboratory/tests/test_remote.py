@@ -1,15 +1,16 @@
-"""Change endpoint-remoto-hetzner: endpoint reale (Hetzner) in tappa ⑤.
+"""Endpoint reale (Hetzner) nel laboratorio codice (change laboratorio-code:
+il gate passa dalla vecchia tappa ⑤ allo step "code" della pagina dedicata).
 
 Copre (design del change, D1–D10):
   - configurazione del token: `.env` (gitignored) + compose, solo nel gateway
   - persistenza: colonna `endpoint` sulle interazioni (NULL = locale) e
     tabella kv `state` per i due flag dell'educatore (interruttore, breaker)
-  - percorso remoto di /api/chat (allowlist, X-Step 5, body OpenAI standard,
-    Bearer mai verso il client) con fake endpoint in-process
+  - percorso remoto di /api/chat (allowlist, step "code" + gate IP, body
+    OpenAI standard, Bearer mai verso il client) con fake endpoint in-process
   - circuito di protezione: scatto predittivo sui limiti della finestra 60 s,
     429 reale, sticky fino a sblocco, finestra ricostruita dal DB
   - misure locali non inquinate (tps/backpressure) e consumi separati
-  - contratto strutturale delle pagine (selettore ⑤, riquadro admin)
+  - contratto strutturale delle pagine (selettore in code.html, riquadro admin)
 """
 from __future__ import annotations
 
@@ -105,7 +106,7 @@ class StateKvTest(unittest.TestCase):
         db = os.path.join(tmp, "s.db")
         try:
             t1 = gateway.SessionTracker(db)
-            t1.record("c", "chat", "5", 200, 1, 1, 1.0, endpoint=_QWEN)
+            t1.record("c", "chat", "code", 200, 1, 1, 1.0, endpoint=_QWEN)
             t1.record("c", "chat", "1", 200, 1, 1, 1.0)  # locale: niente marca
             t2 = gateway.SessionTracker(db)  # riavvio
             rows = t2.timeline("c")["interactions"]
@@ -165,7 +166,7 @@ def _hetzner_handler(rec: _HetznerRec):
 
 
 class RemoteChatTest(unittest.TestCase):
-    """Task 2.1/2.2/2.4/2.5: ramo remoto di /api/chat — allowlist, X-Step 5,
+    """Task 2.1/2.2/2.4/2.5: ramo remoto di /api/chat — allowlist, step code,
     body OpenAI standard, Bearer solo in uscita, riga marcata `endpoint`."""
 
     def setUp(self) -> None:
@@ -176,11 +177,19 @@ class RemoteChatTest(unittest.TestCase):
         self.hz_thread.start()
 
         self._orig = (gateway.HETZNER_URL, gateway.HETZNER_API_KEY,
-                      gateway.LLAMA_URL, gateway._TRACKER, gateway._REMOTE)
+                      gateway.LLAMA_URL, gateway.CODER_URL, gateway._TRACKER,
+                      gateway._REMOTE, dict(gateway._CODER_CACHE))
         gateway.HETZNER_URL = self.hz_url
         gateway.HETZNER_API_KEY = "token-segreto-test"
         gateway.LLAMA_URL = "http://127.0.0.1:1"  # locale off: isoliamo il remoto
+        gateway.CODER_URL = "http://127.0.0.1:1"
         gateway._TRACKER = gateway.SessionTracker(None)
+        # laboratorio codice: la postazione di test (127.0.0.1) è abilitata —
+        # il gate IP dello step code vale anche per le remote
+        gateway._TRACKER.set_state("code_ips", "127.0.0.1")
+        gateway._CODER_CACHE.clear()
+        gateway._CODER_CACHE.update({"ok": False, "ts": time.time(),
+                                     "name": None, "name_ts": 0.0})
         gateway._REMOTE = gateway.RemoteState()
         self._remote_on()
         self.gw = ThreadingHTTPServer(("127.0.0.1", 0), gateway.Handler)
@@ -190,7 +199,9 @@ class RemoteChatTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         (gateway.HETZNER_URL, gateway.HETZNER_API_KEY,
-         gateway.LLAMA_URL, gateway._TRACKER, gateway._REMOTE) = self._orig
+         gateway.LLAMA_URL, gateway.CODER_URL, gateway._TRACKER,
+         gateway._REMOTE, gateway._CODER_CACHE) = self._orig
+        gateway._CODER_CACHE.update(self._orig[6])
         self.gw.shutdown(); self.gw.server_close(); self.gw_thread.join(timeout=2)
         self.hz.shutdown(); self.hz.server_close(); self.hz_thread.join(timeout=2)
 
@@ -218,12 +229,12 @@ class RemoteChatTest(unittest.TestCase):
 
     def _drain(self, cid: str) -> None:
         """Una chat remota portata a termine (attende il record della riga)."""
-        self._post(self._remote_body(), {"X-Step": "5", "X-Client-Id": cid})
+        self._post(self._remote_body(), {"X-Step": "code", "X-Client-Id": cid})
         _wait_tracked(cid)
 
     # -- 2.1: inoltro e forma della risposta ------------------------------
     def test_remote_chat_forwarded_with_bearer_and_standard_body(self) -> None:
-        status, body = self._post(self._remote_body(), {"X-Step": "5"})
+        status, body = self._post(self._remote_body(), {"X-Step": "code"})
         self.assertEqual(status, 200)
         self.assertEqual(self.rec.last_auth, "Bearer token-segreto-test")
         sent = self.rec.last_body
@@ -241,45 +252,59 @@ class RemoteChatTest(unittest.TestCase):
         self.assertEqual(body["trace"]["request"], sent)
         self.assertEqual(body["model"], _QWEN)
 
-    def test_remote_chat_step5_token_cap(self) -> None:
-        """Il tetto token per tappa è policy del gateway: vale anche remoto."""
-        _, body = self._post(self._remote_body(), {"X-Step": "5"})
-        self.assertEqual(body["trace"]["request"]["max_tokens"], 768)
+    def test_remote_chat_code_token_cap(self) -> None:
+        """Il tetto token per tappa è policy del gateway: vale anche remoto —
+        per il laboratorio codice è il tetto dedicato (4096)."""
+        _, body = self._post(self._remote_body(), {"X-Step": "code"})
+        self.assertEqual(body["trace"]["request"]["max_tokens"], 4096)
 
     # -- 2.2: allowlist e vincolo tappa, senza uscire ----------------------
     def test_remote_model_outside_allowlist_400(self) -> None:
         n_before = len(self.rec.requests)
         status, body = self._post({**self._remote_body(), "model": "GPT-9"},
-                                  {"X-Step": "5"})
+                                  {"X-Step": "code"})
         self.assertEqual(status, 400)
         self.assertIn("error", body)
         self.assertEqual(len(self.rec.requests), n_before)  # nulla è partito
 
-    def test_remote_model_requires_step5(self) -> None:
+    def test_remote_model_requires_code_step(self) -> None:
+        """Il vincolo «solo laboratorio codice» è del gateway (step "code"),
+        non della pagina: le altre tappe non possono uscire."""
         n_before = len(self.rec.requests)
         status, body = self._post(self._remote_body(), {"X-Step": "1"})
         self.assertEqual(status, 400)
+        self.assertIn("laboratorio codice", body["error"])
         self.assertEqual(len(self.rec.requests), n_before)
         # anche senza header
         status, _ = self._post(self._remote_body())
         self.assertEqual(status, 400)
         self.assertEqual(len(self.rec.requests), n_before)
 
+    def test_remote_code_ip_gate(self) -> None:
+        """Spec endpoint-remoto «Postazione non abilitata»: la remote da IP
+        fuori allowlist è rifiutata come le locali, senza uscire."""
+        gateway._TRACKER.set_state("code_ips", "10.0.0.1")
+        n_before = len(self.rec.requests)
+        status, body = self._post(self._remote_body(), {"X-Step": "code"})
+        self.assertEqual(status, 403)
+        self.assertTrue(body["code_forbidden"])
+        self.assertEqual(len(self.rec.requests), n_before)  # nulla è partito
+
     # -- 2.4: osservabilità --------------------------------------------------
     def test_remote_chat_records_endpoint_and_real_usage(self) -> None:
-        self._post(self._remote_body(), {"X-Step": "5", "X-Client-Id": "rem"})
+        self._post(self._remote_body(), {"X-Step": "code", "X-Client-Id": "rem"})
         _wait_tracked("rem")
         row = gateway._TRACKER.timeline("rem")["interactions"][0]
         self.assertEqual(row["endpoint"], _QWEN)   # riga marcata come remota
         self.assertEqual(row["tok_in"], 33)        # usage reali dell'endpoint
         self.assertEqual(row["tok_out"], 120)
-        self.assertEqual(row["step"], "5")
+        self.assertEqual(row["step"], "code")
         # la sessione risulta «con endpoint reale» per il pannello
         self.assertTrue(gateway._TRACKER.active_list(300)["active"][0]["remote"])
 
     # -- 2.5: il Bearer non attraversa il confine ---------------------------
     def test_bearer_never_reaches_client(self) -> None:
-        status, body = self._post(self._remote_body(), {"X-Step": "5"})
+        status, body = self._post(self._remote_body(), {"X-Step": "code"})
         self.assertEqual(status, 200)
         self.assertNotIn("token-segreto-test", json.dumps(body))
         # nemmeno nella trace persistita della riga (cid "anon": header default)
@@ -290,13 +315,13 @@ class RemoteChatTest(unittest.TestCase):
         # d'errore ricevuto, mai l'header di autorizzazione
         self.rec.status = 500
         self.rec.payload = {"error": "boom"}
-        status, err = self._post(self._remote_body(), {"X-Step": "5"})
+        status, err = self._post(self._remote_body(), {"X-Step": "code"})
         self.assertEqual(status, 502)
         self.assertNotIn("token-segreto-test", json.dumps(err))
 
     def test_remote_rows_do_not_feed_local_tps(self) -> None:
         """D9/3.5: le chat remote non producono punti nella serie t/s."""
-        self._post(self._remote_body(), {"X-Step": "5", "X-Client-Id": "rtps"})
+        self._post(self._remote_body(), {"X-Step": "code", "X-Client-Id": "rtps"})
         _wait_tracked("rtps")
         pts = gateway._TRACKER.tps_points()["points"]
         self.assertEqual(pts, [])  # tok_out c'è, ma la riga è remota: esclusa
@@ -312,7 +337,7 @@ class RemoteBreakerTest(RemoteChatTest):
         for i in range(_REMOTE_REQ_LIMIT if False else 10):  # noqa: SIM108
             self._drain(f"s{i}")
         self.assertEqual(len(self.rec.requests), 10)
-        status, body = self._post(self._remote_body(), {"X-Step": "5"})
+        status, body = self._post(self._remote_body(), {"X-Step": "code"})
         self.assertEqual(status, 503)
         self.assertTrue(body["remote_disabled"])
         self.assertIn("reason", body)
@@ -328,7 +353,7 @@ class RemoteBreakerTest(RemoteChatTest):
         with gateway._REMOTE._lock:  # la finestra si svuota istantaneamente
             gateway._REMOTE._win = []
         self.assertTrue(gateway._REMOTE.tripped())
-        status, body = self._post(self._remote_body(), {"X-Step": "5"})
+        status, body = self._post(self._remote_body(), {"X-Step": "code"})
         self.assertEqual(status, 503)
         self.assertTrue(body["remote_disabled"])
 
@@ -337,13 +362,13 @@ class RemoteBreakerTest(RemoteChatTest):
         scatta e le richieste successive non partono."""
         self.rec.status = 429
         self.rec.payload = {"error": "rate limit"}
-        status, body = self._post(self._remote_body(), {"X-Step": "5"})
+        status, body = self._post(self._remote_body(), {"X-Step": "code"})
         self.assertEqual(status, 503)
         self.assertTrue(body["remote_disabled"])
         self.assertTrue(gateway._REMOTE.tripped())
         # la successiva non raggiunge nemmeno l'endpoint
         n = len(self.rec.requests)
-        status, body = self._post(self._remote_body(), {"X-Step": "5"})
+        status, body = self._post(self._remote_body(), {"X-Step": "code"})
         self.assertEqual(status, 503)
         self.assertEqual(len(self.rec.requests), n)
 
@@ -352,7 +377,7 @@ class RemoteBreakerTest(RemoteChatTest):
         se è ancora piena la prossima richiesta predittiva fa scattare di nuovo."""
         for i in range(10):
             self._drain(f"s{i}")
-        status, body = self._post(self._remote_body(), {"X-Step": "5"})
+        status, body = self._post(self._remote_body(), {"X-Step": "code"})
         self.assertEqual(status, 503)  # 11ª: trip predittivo
         # sblocco come farebbe l'admin
         req = urllib.request.Request(
@@ -363,14 +388,14 @@ class RemoteBreakerTest(RemoteChatTest):
             st = json.loads(r.read().decode("utf-8"))
         self.assertEqual(st["remote"]["tripped"], False)
         # finestra ANCORA piena (10 richieste di pochi ms fa): riscatto onesto
-        status, body = self._post(self._remote_body(), {"X-Step": "5"})
+        status, body = self._post(self._remote_body(), {"X-Step": "code"})
         self.assertEqual(status, 503)
         self.assertTrue(body["remote_disabled"])
         # svuotata (le richieste invecchiano), dopo nuovo sblocco si riparte
         gateway._REMOTE.unlock()
         with gateway._REMOTE._lock:
             gateway._REMOTE._win = []
-        status, body = self._post(self._remote_body(), {"X-Step": "5"})
+        status, body = self._post(self._remote_body(), {"X-Step": "code"})
         self.assertEqual(status, 200)
         self.assertEqual(body["reply"], REMOTE_REPLY)
 
@@ -382,12 +407,12 @@ class RemoteBreakerTest(RemoteChatTest):
             db = os.path.join(tmp, "s.db")
             t = gateway.SessionTracker(db)
             fresh = time.time()
-            t.record("r1", "chat", "5", 200, 1, 1, 1.0, endpoint=_QWEN,
+            t.record("r1", "chat", "code", 200, 1, 1, 1.0, endpoint=_QWEN,
                      tok_in=100, tok_out=50)
-            t.record("r2", "chat", "5", 200, 1, 1, 1.0, endpoint=_QWEN,
+            t.record("r2", "chat", "code", 200, 1, 1, 1.0, endpoint=_QWEN,
                      tok_in=100, tok_out=50)
             # ...e una remota VECCHIA (fuori finestra) + una locale fresca
-            t.record("r3", "chat", "5", 200, 1, 1, 1.0, endpoint=_QWEN,
+            t.record("r3", "chat", "code", 200, 1, 1, 1.0, endpoint=_QWEN,
                      tok_in=999, tok_out=999)
             t.record("r4", "chat", "1", 200, 1, 1, 1.0, tok_in=500, tok_out=500)
             with t._lock:
@@ -417,7 +442,7 @@ class RemoteBreakerTest(RemoteChatTest):
         with urllib.request.urlopen(req, timeout=5) as r:
             r.read()
         n = len(self.rec.requests)
-        status, body = self._post(self._remote_body(), {"X-Step": "5"})
+        status, body = self._post(self._remote_body(), {"X-Step": "code"})
         self.assertEqual(status, 503)
         self.assertTrue(body["remote_disabled"])
         self.assertEqual(len(self.rec.requests), n)  # nulla è partito
@@ -432,11 +457,12 @@ class RemoteBreakerTest(RemoteChatTest):
         orig = gateway._TRACKER
         gateway._TRACKER = slow
         slow.set_state("remote_enabled", "1")  # flags sul tracker attivo
+        slow.set_state("code_ips", "127.0.0.1")  # gate IP soddisfatto
         try:
             status, _ = self._post({"messages": [{"role": "user", "content": "x"}]},
                                    {"X-Step": "1"})
             self.assertEqual(status, 429)  # la chat LOCALE è rifiutata…
-            status, body = self._post(self._remote_body(), {"X-Step": "5"})
+            status, body = self._post(self._remote_body(), {"X-Step": "code"})
             self.assertEqual(status, 200)  # …ma quella REMOTA passa
             self.assertEqual(body["reply"], REMOTE_REPLY)
         finally:
@@ -506,7 +532,7 @@ class RemoteStatusTest(RemoteChatTest):
         """L'interruttore parte OFF (spec): senza «on» nessuna richiesta remota
         passa; on/off/unlock girano sui kv e tornano lo stato aggiornato."""
         gateway._TRACKER.set_state("remote_enabled", "0")  # default di campo
-        status, body = self._post(self._remote_body(), {"X-Step": "5"})
+        status, body = self._post(self._remote_body(), {"X-Step": "code"})
         self.assertEqual(status, 503)
         self.assertTrue(body["remote_disabled"])
         rem = self._admin("on")
@@ -532,7 +558,7 @@ class RemoteStatusTest(RemoteChatTest):
         rifiutata senza uscire (il laboratorio resta identico a prima)."""
         gateway.HETZNER_API_KEY = None
         n = len(self.rec.requests)
-        status, body = self._post(self._remote_body(), {"X-Step": "5"})
+        status, body = self._post(self._remote_body(), {"X-Step": "code"})
         self.assertEqual(status, 503)
         self.assertTrue(body["remote_disabled"])
         self.assertEqual(len(self.rec.requests), n)
@@ -573,7 +599,7 @@ class RemoteConsumiTest(RemoteChatTest):
         # 1 chat locale (2 s, 100 in / 50 out) + 1 remota (33 in / 120 out)
         gateway._TRACKER.record("mix", "chat", "1", 200, 10, 10, 2000.0,
                                 tok_in=100, tok_out=50)
-        gateway._TRACKER.record("mix", "chat", "5", 200, 10, 10, 500.0,
+        gateway._TRACKER.record("mix", "chat", "code", 200, 10, 10, 500.0,
                                 tok_in=33, tok_out=120, endpoint=_QWEN)
         status, body = self._get("/api/consumi/mix")
         self.assertEqual(status, 200)
@@ -590,7 +616,7 @@ class RemoteConsumiTest(RemoteChatTest):
         self.assertGreater(r["euro"], 0.0)
 
     def test_remote_only_session_has_tokens(self) -> None:
-        gateway._TRACKER.record("cloud", "chat", "5", 200, 10, 10, 400.0,
+        gateway._TRACKER.record("cloud", "chat", "code", 200, 10, 10, 400.0,
                                 tok_in=33, tok_out=120, endpoint="Kimi-K2.7-Code")
         status, body = self._get("/api/consumi/cloud")
         self.assertEqual(status, 200)
@@ -600,23 +626,23 @@ class RemoteConsumiTest(RemoteChatTest):
 
     def test_two_remote_models_listed_separately(self) -> None:
         for ep in _MODELS:
-            gateway._TRACKER.record("due", "chat", "5", 200, 10, 10, 100.0,
+            gateway._TRACKER.record("due", "chat", "code", 200, 10, 10, 100.0,
                                     tok_in=10, tok_out=20, endpoint=ep)
         _, body = self._get("/api/consumi/due")
         self.assertEqual({r["modello"] for r in body["remoto"]}, set(_MODELS))
 
 
 class PageRemoteTest(unittest.TestCase):
-    """Task 6.x/7.1: contratto strutturale del selettore in tappa ⑤ e del
-    riquadro consumi a colonna singola (come i page-test esistenti)."""
+    """Contratto strutturale del selettore modello e dei consumi a due tabelle
+    nella pagina del laboratorio codice (code.html), come i page-test esistenti."""
 
     def _read(self) -> str:
-        return _read("backend/web/static/index.html")
+        return _read("backend/web/static/code.html")
 
     # --- selettore ---------------------------------------------------------
     def test_model_picker_markup_and_render(self) -> None:
         body = self._read()
-        for i in ("model-pick", "model5", "model5-budget", "remote-note"):
+        for i in ("model-pick", "model", "model-budget", "remote-note"):
             self.assertIn(f'id="{i}"', body)
         self.assertIn("renderModelPick", body)      # lo stato arriva dal poll
         self.assertIn("state.remote", body)          # fonte: model-status
@@ -633,29 +659,50 @@ class PageRemoteTest(unittest.TestCase):
 
     def test_selector_names_the_provider(self) -> None:
         """Come si dice «Modello locale», il remoto dichiara il provider
-        (es. «Hetzner · Qwen3.6-35B»): da dove arriva la risposta non è un
-        dettaglio, è parte della lezione. Anche il budget dice DI CHI è il
-        limite («disponibili su Hetzner»), e si vede solo con un modello
-        remoto selezionato: col locale sarebbe rumore fuorviante."""
+        (es. «Hetzner · Qwen3.6-35B»): da dove arriva la risposta è parte
+        della lezione. Anche il budget dice DI CHI è il limite («disponibili
+        su Hetzner»), e si vede solo con un modello remoto selezionato."""
         body = self._read()
         self.assertIn("r.provider", body)
         self.assertIn("disponibili su", body)
+
+    def test_local_option_declares_who_answers(self) -> None:
+        """L'opzione «Modello locale» dichiara chi risponde DAVVERO in questa
+        tappa: il nome dal blocco code di model-status (coder dedicato quando
+        attivo, principale altrimenti) — mai un hardcoded della pagina."""
+        body = self._read()
+        self.assertIn("state.code", body)            # fonte: model-status.code
+        self.assertIn("Modello locale", body)
+
+    def test_who_answers_declared_without_selector(self) -> None:
+        """Regressione (osservata col primo rebuild): l'unico posto che
+        dichiarava chi risponde era il selettore, che compare solo con
+        l'endpoint remoto attivo — senza token la pagina non diceva MAI che
+        sta generando il coder (o, nel fallback, il principale), mentre il
+        banner nomina il modello MAIN: sembrava che il laboratorio codice
+        usasse quello. Ora la riga dei limiti della chat dichiara sempre
+        chi risponde, ridipinta a ogni poll."""
+        body = self._read()
+        self.assertIn("who-answers", body)           # il nome nella riga limiti
+        self.assertIn("risponde", body)
+        # dipinto a ogni poll di model-status, anche a ctx invariato (fallback)
+        self.assertIn("chatCode.paintCtxLimit();", body)
 
     def test_model_change_resets_conversation(self) -> None:
         """Cambio modello a conversazione aperta = azzeramento (come i preset
         di tappa ②); il prompt seme torna nell'input."""
         body = self._read()
-        self.assertIn("chat5.reset()", body)
-        self.assertIn("setModel5", body)
+        self.assertIn("chatCode.reset()", body)
+        self.assertIn("setModel(", body)
 
-    def test_chat5_sends_model_field(self) -> None:
+    def test_chat_sends_model_field(self) -> None:
         body = self._read()
         self.assertIn("body.model", body)            # la factory lo inoltra
-        self.assertIn("model: function", body)       # la ⑤ lo dichiara
+        self.assertIn("model: function", body)       # la chat code lo dichiara
 
     def test_remote_disabled_no_autoretry(self) -> None:
         """remote_disabled ≠ overload: niente countdown/retry, il ragazzo
-        avvisa l'educatore; e l'errore remoto NON spegne le chat locali."""
+        avvisa l'educatore; e l'errore remoto NON spegne la chat locale."""
         import re
         body = self._read()
         self.assertIn("j.remote_disabled", body)
@@ -670,24 +717,24 @@ class PageRemoteTest(unittest.TestCase):
     def test_remote_reply_badge_cloud(self) -> None:
         body = self._read()
         self.assertIn("badgeIcon", body)             # icona parametrica nel badge
-        self.assertIn('badgeIcon: "cloud"', body)    # la ⑤ usa la nuvola
+        self.assertIn('badgeIcon: "cloud"', body)    # il remoto usa la nuvola
 
     def test_remote_spinner_says_what_you_wait(self) -> None:
-        """Misurato al campo: 194 s per una card sul tier gratuito. Lo spinner
-        deve dirlo — un ragazzo davanti a tre minuti di «elaborazione» pensa
-        che si sia rotto qualcosa."""
+        """Misurato al campo: anche minuti per una generazione. Lo spinner
+        deve dirlo — un ragazzo davanti a lunghi silenzi pensa che si sia
+        rotto qualcosa."""
         body = self._read()
         self.assertIn("elaborazione sul modello remoto", body)
         self.assertIn("anche minuti", body)
 
-    # --- consumi: due tabelle in ⑤ ------------------------------------------
-    def test_consumi_two_tables_in_step5(self) -> None:
-        """Tappa ⑤ + modello remoto: DUE tabelle (feedback di campo) — il
-        modello scelto (token reali, costo a listino) e la sessione in
-        locale (il confronto di sempre, solo chat locali)."""
+    # --- consumi: due tabelle nel laboratorio codice ------------------------
+    def test_consumi_two_tables_with_remote_model(self) -> None:
+        """Laboratorio codice + modello remoto: DUE tabelle (feedback di
+        campo) — il modello scelto (token reali, costo a listino) e la
+        sessione in locale (il confronto di sempre, solo chat locali)."""
         body = self._read()
         self.assertIn("renderConsumiRemoto", body)
-        self.assertIn("state.step === 4", body)      # tappa ⑤ (indice 4)
+        self.assertIn("modelPick.current", body)     # solo col remoto scelto
         self.assertIn("Il modello scelto", body)     # tabella 1
         self.assertIn("La tua sessione in locale", body)  # tabella 2
         self.assertIn("listino", body)               # dichiarato nel riquadro
@@ -696,25 +743,15 @@ class PageRemoteTest(unittest.TestCase):
 
     def test_status_boxes_at_page_bottom(self) -> None:
         """Feedback di campo: banner «modello attivo» e riquadro «costo
-        sessione» stanno DOPO il riquadro di input dell'ultima tappa e
-        PRIMA della navigazione/footer — non più in testa alla pagina."""
+        sessione» stanno DOPO il riquadro di input e PRIMA del footer."""
         body = self._read()
-        last_input = body.index('id="html-preview"')       # fine tappa ⑤
+        last_input = body.index('id="html-preview"')
         banner = body.index('id="model-banner"')
         consumi = body.index('id="consumi"')
-        nav = body.index('class="nav"')
         footer = body.index("<footer>")
         self.assertLess(last_input, banner, "il banner sta dopo il riquadro di input")
         self.assertLess(banner, consumi)
-        self.assertLess(consumi, nav, "i riquadri stanno prima della navigazione")
-        self.assertLess(nav, footer)
-
-    def test_consumi_refresh_on_step_change(self) -> None:
-        """La forma del riquadro cambia entrando/uscendo dalla ⑤: si
-        ridisegna subito, non al prossimo tick dei 5 s."""
-        body = self._read()
-        self.assertIn("loadConsumi();", body)
-
+        self.assertLess(consumi, footer)
 
 class AdminRemoteTest(unittest.TestCase):
     """Task 8.x: riquadro «Endpoint reale», comandi on/off/sblocco, badge."""
@@ -757,6 +794,53 @@ class AdminRemoteTest(unittest.TestCase):
         self.assertIn('symbol id="i-cloud"', body)   # il glifo esiste
 
 
+class AdminCodeTest(unittest.TestCase):
+    """Change laboratorio-code, task 4.1: riquadro «Laboratorio codice» nel
+    pannello — editing allowlist IP, chips dagli IP visti, link alla pagina."""
+
+    def _read(self) -> str:
+        return _read("backend/web/static/admin.html")
+
+    def test_code_box_markup(self) -> None:
+        body = self._read()
+        self.assertIn('id="codebox"', body)          # il riquadro
+        self.assertIn("/api/admin/code-ips", body)   # GET lettura + POST salvataggio
+        self.assertIn('id="codeips"', body)          # campo di editing
+        self.assertIn("Salva", body)
+        self.assertIn("JSON.stringify({ ips:", body) # cosa viene salvato
+
+    def test_code_box_chips_of_seen_ips(self) -> None:
+        """Le chips propongono gli IP già visti nelle sessioni: se il kiosk
+        cambia indirizzo (DHCP), la correzione è un click."""
+        body = self._read()
+        self.assertIn('id="codechips"', body)
+        self.assertIn("SEEN_IPS", body)
+        self.assertIn("a.last_ip", body)             # fonte: l'elenco sessioni
+
+    def test_code_box_links_the_lab_page(self) -> None:
+        body = self._read()
+        self.assertIn('href="/code.html"', body)     # l'educatore lo apre da qui
+        self.assertIn("apri il laboratorio codice", body)
+
+    def test_stepname_labels_code_step(self) -> None:
+        """La timeline resta leggibile: la riga dello step code dice che è la
+        quinta tappa, quella del laboratorio codice."""
+        body = self._read()
+        self.assertIn('"code": "⑤ Code (laboratorio codice)"', body)
+        # la vecchia "5" non esiste più come tappa del percorso
+        self.assertNotIn('"5": "⑤', body)
+
+    def test_allowlist_not_polled_while_editing(self) -> None:
+        """Il poll di 3 s NON ricarica l'allowlist: sovrascriverebbe il campo
+        mentre l'educatore sta ancora scrivendo (regressione facile)."""
+        import re
+        body = self._read()
+        m = re.search(r"setInterval\(function \(\) \{([^}]*)\}", body)
+        self.assertIsNotNone(m)
+        self.assertNotIn("loadCodeIps", m.group(1))
+        self.assertIn("loadCodeIps();", body)        # caricata una volta all'avvio
+
+
 class TimeoutRegressionTest(RemoteChatTest):
     """Regressione osservata al campo (21:44): i modelli lenti NON fanno
     streaming — la risposta (header compresi) arriva solo a generazione
@@ -772,7 +856,7 @@ class TimeoutRegressionTest(RemoteChatTest):
         gateway._PROXY_TIMEOUT = 0.2  # al volo: il fake «genera» per 0.8 s
         try:
             status, body = self._post(self._remote_body(),
-                                      {"X-Step": "5", "X-Client-Id": "slow"})
+                                      {"X-Step": "code", "X-Client-Id": "slow"})
         finally:
             gateway._PROXY_TIMEOUT = orig
         self.assertEqual(status, 504)
@@ -845,14 +929,19 @@ class EscapingRegressionTest(unittest.TestCase):
 
     def test_timeouts_coherent_client_gateway_nginx(self) -> None:
         """client (270 s) > gateway (240 s) > ... > mai: il JSON del gateway
-        arriva sempre PRIMA della pagina HTML di nginx (300 s). Costanti
-        tenute sincrone dal test, come già TPS_FLOOR."""
+        arriva sempre PRIMA della pagina HTML di nginx. Sulla path code la
+        catena è scalata (D5 laboratorio-code): client 930 s > gateway 900 s >
+        nginx 960 s di tetto. Costanti tenute sincrone dal test, come TPS_FLOOR."""
         idx = _read("backend/web/static/index.html")
+        code = _read("backend/web/static/code.html")
         gw = _read("backend/gateway.py")
         conf = _read("nginx.conf")
         self.assertIn("_PROXY_TIMEOUT = 240", gw)
-        self.assertIn("proxy_read_timeout 300s", conf)
-        self.assertIn("270000", idx)
+        self.assertIn("_CODE_PROXY_TIMEOUT = 900", gw)
+        self.assertIn("proxy_read_timeout 960s", conf)
+        self.assertIn("proxy_send_timeout 960s", conf)
+        self.assertIn("270000", idx)   # chat ①–④: timeout client di sempre
+        self.assertIn("930000", code)  # laboratorio codice: sopra il gateway
 
 
 class AllowlistCoherenceTest(unittest.TestCase):
@@ -926,10 +1015,11 @@ def _fake_usage_local(body: dict, reply_len: int) -> dict:
 
 
 class CoderRoutingTest(unittest.TestCase):
-    """Modello coder dedicato alla ⑤ (decisione confermata dall'educatore
-    sul RAM reale del mini PC, 24 GB: 2×~1,9 GB di peak ci stanno larghi):
-    le chat LOCALI della ⑤ vanno al coder quando attivo, con fallback
-    trasparente sul modello principale; le altre tappe non cambiano percorso."""
+    """Modello coder dedicato al laboratorio codice (decisione confermata
+    dall'educatore sul RAM reale del mini PC, 24 GB: 2×~1,9 GB di peak ci
+    stanno larghi): le chat LOCALI dello step "code" vanno al coder quando
+    attivo, con fallback trasparente sul modello principale; le altre tappe
+    non cambiano percorso."""
 
     def setUp(self) -> None:
         # fake llama principale + fake coder, porte effimere
@@ -948,6 +1038,7 @@ class CoderRoutingTest(unittest.TestCase):
         gateway.LLAMA_URL = f"http://127.0.0.1:{self.main.server_address[1]}"
         gateway.CODER_URL = f"http://127.0.0.1:{self.coder.server_address[1]}"
         gateway._TRACKER = gateway.SessionTracker(None)
+        gateway._TRACKER.set_state("code_ips", "127.0.0.1")  # postazione abilitata
         gateway._CODER_CACHE.clear()
         gateway._CODER_CACHE.update({"ok": None, "ts": 0.0, "name": None, "name_ts": 0.0})
         self.gw = ThreadingHTTPServer(("127.0.0.1", 0), gateway.Handler)
@@ -976,11 +1067,11 @@ class CoderRoutingTest(unittest.TestCase):
     def _chat(self, text: str) -> dict:
         return {"messages": [{"role": "user", "content": text}]}
 
-    def test_step5_local_goes_to_coder(self) -> None:
-        status, body = self._post(self._chat("card"), {"X-Step": "5"})
+    def test_code_local_goes_to_coder(self) -> None:
+        status, body = self._post(self._chat("card"), {"X-Step": "code"})
         self.assertEqual(status, 200)
         self.assertEqual(body["reply"], "dal coder")
-        self.assertEqual(self.rec_coder.last_body["max_tokens"], 768)  # tetto ⑤
+        self.assertEqual(self.rec_coder.last_body["max_tokens"], 4096)  # tetto code
         self.assertEqual(self.rec_coder.last_body["repeat_penalty"], 1.1)  # llama-family
         self.assertIsNone(self.rec_main.last_body)   # il principale non è toccato
 
@@ -991,11 +1082,11 @@ class CoderRoutingTest(unittest.TestCase):
         self.assertIsNone(self.rec_coder.last_body)
 
     def test_coder_absent_fallback_on_main(self) -> None:
-        """Profilo «coder» non attivo (Pi 3, o make up normale): la ⑤ resta
-        sul modello principale, nessun errore per il ragazzo."""
+        """Profilo «coder» non attivo: il laboratorio codice resta sul modello
+        principale, nessun errore per il ragazzo (fallback dichiarato)."""
         self.coder.shutdown(); self.coder.server_close()
         gateway._CODER_CACHE["ok"] = None  # invalida la cache del probe
-        status, body = self._post(self._chat("card"), {"X-Step": "5"})
+        status, body = self._post(self._chat("card"), {"X-Step": "code"})
         self.assertEqual(status, 200)
         self.assertEqual(body["reply"], "dal principale")
 
@@ -1011,7 +1102,7 @@ class CoderRoutingTest(unittest.TestCase):
         gateway.CODER_URL = f"http://127.0.0.1:{dying.server_address[1]}"
         gateway._CODER_CACHE["ok"] = None  # probe: la porta risponde (health ok)
         try:
-            status, body = self._post(self._chat("card"), {"X-Step": "5"})
+            status, body = self._post(self._chat("card"), {"X-Step": "code"})
         finally:
             dying.shutdown(); dying.server_close()
         self.assertEqual(status, 200)
@@ -1034,20 +1125,36 @@ class CoderRoutingTest(unittest.TestCase):
         self.assertFalse(body["model_active"])
         self.assertIn("modello non attivo", body["error"])
 
-    def test_model_status_declares_coder(self) -> None:
-        """L'opzione «Modello locale» della ⑤ dichiara CHI risponde: col coder
-        attivo, il suo nome (da /props), non quello del principale."""
+    def test_model_status_declares_who_answers(self) -> None:
+        """Il blocco `code` dichiara CHI risponde davvero in questa tappa: col
+        coder attivo, il suo nome e la SUA finestra di contesto (8192); assente,
+        il modello principale (fallback dichiarato) e la sua (2048). L'esito
+        `allowed` è per chi chiede, la lista IP non viaggia."""
+        gateway._TRACKER.set_state("code_ips", "127.0.0.1")
         with urllib.request.urlopen(self.gw_url + "/api/model-status", timeout=5) as r:
             body = json.loads(r.read().decode("utf-8"))
         self.assertTrue(body["coder"]["active"])
         self.assertEqual(body["coder"]["model"], "qwen2.5-coder-1.5b")
-        # assente: active false, nessun nome
+        self.assertTrue(body["code"]["active"])
+        self.assertEqual(body["code"]["model"], "qwen2.5-coder-1.5b")
+        self.assertEqual(body["code"]["ctx"], 8192)   # -c del coder dedicato
+        self.assertTrue(body["code"]["allowed"])
+        # assente: active false, chi risponde è il principale
         self.coder.shutdown(); self.coder.server_close()
         gateway._CODER_CACHE["ok"] = None
         with urllib.request.urlopen(self.gw_url + "/api/model-status", timeout=5) as r:
             body = json.loads(r.read().decode("utf-8"))
         self.assertFalse(body["coder"]["active"])
         self.assertIsNone(body["coder"]["model"])
+        self.assertFalse(body["code"]["active"])
+        self.assertEqual(body["code"]["model"], "qwen2.5-1.5b")  # fallback main
+        self.assertEqual(body["code"]["ctx"], 2048)
+        # e l'esito personale cambia con l'allowlist, senza esporla
+        gateway._TRACKER.set_state("code_ips", "10.0.0.1")
+        with urllib.request.urlopen(self.gw_url + "/api/model-status", timeout=5) as r:
+            body = json.loads(r.read().decode("utf-8"))
+        self.assertFalse(body["code"]["allowed"])
+        self.assertNotIn("10.0.0.1", json.dumps(body))
 
 
 class CoderConfigTest(unittest.TestCase):
@@ -1064,15 +1171,46 @@ class CoderConfigTest(unittest.TestCase):
         coder = compose.split("llama-coder:")[1]
         self.assertNotIn("8082:8082", coder)
 
-    def test_makefile_up_coder_target(self) -> None:
+    def test_compose_coder_context_window(self) -> None:
+        """D7 laboratorio-code: il coder sale a -c 8192 (la pagina intera ha
+        bisogno di contesto); il main resta a 2048 (fallback dichiarato)."""
+        compose = _read("docker-compose.yml")
+        coder = compose.split("llama-coder:")[1]
+        self.assertIn("-c 8192", coder)
+        self.assertNotIn("-c 8192", compose.split("llama-coder:")[0])  # main invariato
+        # e il gateway dichiara le finestre ai client (contatore pagina)
+        gw = compose.split("gateway:")[1].split("\n\n  ")[0]
+        self.assertIn('LLAMA_CTX: "2048"', gw)
+        self.assertIn('CODER_CTX: "8192"', gw)
+
+    def test_makefile_up_includes_coder_profile(self) -> None:
+        """Un solo comando (D7): `make up` attiva ENTRAMBI i profili — due
+        llama, due laboratori; `up-coder` non serve più e sparisce."""
         mk = _read("Makefile")
-        self.assertIn("up-coder:", mk)
-        self.assertIn("--profile coder", mk)
+        # la variabile PROFILE (usata da up/down/rebuild/clean) porta i due profili
+        profiles = mk.split("PROFILE")[1].split("\n")[0]
+        self.assertIn("--profile model --profile coder", profiles)
+        up = mk.split("up:")[1].split("\n\n")[0]
+        self.assertIn("$(PROFILE)", up)
+        self.assertNotIn("up-coder", mk)
+        # down/clean puliscono anche il coder
+        down = mk.split("down:")[1].split("\n\n")[0]
+        clean = mk.split("clean:")[1].split("\n\n")[0]
+        self.assertIn("$(PROFILE)", down)
+        self.assertIn("$(PROFILE)", clean)
+        # pi-up NON attiva il coder (come sempre: il Pi 3 non lo tiene):
+        # si guarda il comando della ricetta, non i commenti
+        pi_cmd = [l for l in mk.split("pi-up:")[1].split("\n\n")[0].split("\n")
+                  if l.startswith("\t")]
+        self.assertTrue(pi_cmd)
+        self.assertNotIn("coder", " ".join(pi_cmd))
+        self.assertIn("PROFILE_PI", " ".join(pi_cmd))
 
     def test_page_local_option_declares_who_answers(self) -> None:
-        body = _read("backend/web/static/index.html")
-        self.assertIn("modelCoder", body)
-        self.assertIn("state.modelCoder || state.modelName", body)
+        """L'opzione locale della pagina codice usa il blocco `code` di
+        model-status: il gateway dice CHI risponde, la pagina al massimo mostra."""
+        body = _read("backend/web/static/code.html")
+        self.assertIn("code.model", body)
 
 
 if __name__ == "__main__":

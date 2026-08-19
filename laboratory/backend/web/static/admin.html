@@ -133,6 +133,22 @@
   </div>
   <div class="col">
     <div class="tpsbox remotebox" id="remotebox"><span class="empty">endpoint reale: caricamento…</span></div>
+    <!-- Laboratorio codice (change laboratorio-code): gate IP della pagina
+         code.html. Allowlist di IP esatti nel kv del gateway: vale dal
+         salvataggio, sopravvive ai riavvii. Le chips propongono gli IP già
+         visti nelle sessioni; il link apre il laboratorio da qui. -->
+    <div class="tpsbox" id="codebox">
+      <div class="st">Laboratorio codice — postazioni abilitate</div>
+      <input id="codeips" class="ipin" type="text" style="width:100%"
+             placeholder="es. 192.168.1.23, 192.168.1.24 (IP esatti, separati da virgole)"
+             title="salva col bottone: vale subito, senza riavvii">
+      <div style="margin-top:6px">
+        <button class="wbtn" id="codeips-save" type="button">Salva</button>
+        <a class="back" href="/code.html" target="_blank" style="margin-left:10px">apri il laboratorio codice</a>
+        <span id="codeips-st" style="margin-left:10px"></span>
+      </div>
+      <div id="codechips" style="margin-top:6px"></div>
+    </div>
     <div class="tpsbox" id="tps"><span class="empty">token/s: nessuna chat ancora</span><div class="tt" id="tpstip" hidden></div></div>
     <h2 id="tl-title">Timeline</h2>
     <div class="wbar" style="justify-content:flex-end">
@@ -167,7 +183,8 @@ function short(cid) { return cid.length > 14 ? cid.slice(0, 14) + "…" : cid; }
  * pannello, cambiando la grafica — regressione osservata al campo. */
 function esc(s) { var d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
 function stepName(step) {
-  return ({ "1": "① Context", "2": "② System", "3": "③ Skills", "4": "④ Workflow", "5": "⑤ Prompt Engineering" })[step] || ("tappa " + (step || "?"));
+  return ({ "1": "① Context", "2": "② System", "3": "③ Skills", "4": "④ Workflow",
+            "code": "⑤ Code (laboratorio codice)" })[step] || ("tappa " + (step || "?"));
 }
 function winLabel() {
   return WIN === "all" ? "tutto lo storico" : "ultimi " + (WIN / 60) + " min";
@@ -202,6 +219,10 @@ function loadList() {
       d.total + (d.total === 1 ? " sessione" : " sessioni") + " (" + winLabel() + ")";
     if (!d.active.length) { ul.innerHTML = '<li class="empty">nessuna sessione</li>'; return; }
     ul.innerHTML = "";
+    // gli IP visti diventano chips del riquadro «Laboratorio codice» (D2):
+    // correggere un kiosk che ha cambiato indirizzo è un click
+    d.active.forEach(function (a) { if (a.last_ip) SEEN_IPS[a.last_ip] = 1; });
+    renderCodeChips();
     d.active.forEach(function (a) {
       var li = document.createElement("li");
       li.className = "uitem" + (a.client === SEL ? " sel" : "");
@@ -559,7 +580,7 @@ function renderRemote(r) {
   } else {
     st.textContent = "off";
   }
-  head.appendChild(document.createTextNode("Endpoint reale (tappa ⑤): "));
+  head.appendChild(document.createTextNode("Endpoint reale (laboratorio codice): "));
   head.appendChild(st);
   var info = document.createElement("div");
   info.textContent = "finestra 60 s condivisa: richieste " + w.req + "/" + w.req_limit +
@@ -603,6 +624,65 @@ function loadRemote() {
     .catch(function () {});
 }
 
+/* ============ Laboratorio codice (change laboratorio-code, D2/D9) ==========
+ * Il gate della pagina code.html: allowlist di IP ESATTI, salvata nel kv del
+ * gateway (vale dal salvataggio, sopravvive ai riavvii). Le chips propongono
+ * gli IP già visti nelle sessioni: se il kiosk cambia indirizzo, la correzione
+ * è un click. Il link apre il laboratorio dalla postazione dell'educatore. */
+var CODEIPS = [];   // allowlist corrente (dal gateway)
+var SEEN_IPS = {};  // IP visti nelle sessioni dell'elenco (chips)
+
+function renderCodeChips() {
+  var host = document.getElementById("codechips");
+  if (!host) return;
+  host.innerHTML = "";
+  var seen = Object.keys(SEEN_IPS).filter(Boolean).sort();
+  if (!seen.length) return;
+  var lab = document.createElement("div");
+  lab.className = "meta-top";
+  lab.textContent = "IP visti nelle sessioni (click = aggiunge all'elenco):";
+  host.appendChild(lab);
+  seen.forEach(function (ip) {
+    var c = document.createElement("span");
+    c.className = "chip";
+    c.textContent = ip + (CODEIPS.indexOf(ip) !== -1 ? " ✓" : "");
+    c.title = CODEIPS.indexOf(ip) !== -1 ? "già abilitato" : "aggiungi alle postazioni abilitate";
+    c.onclick = function () {
+      if (CODEIPS.indexOf(ip) !== -1) return;
+      var inp = document.getElementById("codeips");
+      inp.value = (inp.value.trim() ? inp.value.trim() + ", " : "") + ip;
+    };
+    host.appendChild(c);
+  });
+}
+
+function saveCodeIps() {
+  var inp = document.getElementById("codeips");
+  var st = document.getElementById("codeips-st");
+  fetch("/api/admin/code-ips", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ips: inp.value })
+  }).then(function (r) { return r.json(); })
+    .then(function (d) {
+      if (d && d.error) { st.textContent = "✕ " + d.error; return; }
+      CODEIPS = (d && d.ips) || [];
+      inp.value = CODEIPS.join(", ");
+      st.textContent = "✓ salvato: vale da subito";
+      renderCodeChips();
+    }).catch(function () { st.textContent = "✕ server non raggiungibile"; });
+}
+
+function loadCodeIps() {
+  fetch("/api/admin/code-ips").then(function (r) { return r.json(); })
+    .then(function (d) {
+      CODEIPS = (d && d.ips) || [];
+      document.getElementById("codeips").value = CODEIPS.join(", ");
+      renderCodeChips();
+    }).catch(function () {});
+}
+document.getElementById("codeips-save").addEventListener("click", saveCodeIps);
+
 document.getElementById("wbar").addEventListener("click", function (ev) {
   var t = ev.target.closest ? ev.target.closest(".wbtn") : null;
   if (t) setWindow(t.getAttribute("data-w"));
@@ -620,6 +700,8 @@ setWindow(WIN);
 renderIpBar();
 renderTps();
 loadRemote();
+loadCodeIps();  // allowlist del laboratorio codice: caricata una volta, si
+                // salva col bottone (il poll non deve sovrascrivere chi scrive)
 setInterval(function () { loadList(); renderTps(); loadRemote(); if (SEL) loadTimeline(SEL); }, TICK);
 </script>
 </body>

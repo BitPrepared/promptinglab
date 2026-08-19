@@ -38,17 +38,25 @@ Route (solo /api/* — tutto il resto è 404 JSON):
   POST /api/chat               -> bridge a llama /v1/chat/completions (body
                                   normalizzato; risposta con `trace`: request
                                   inoltrata e response grezza, sempre — D3).
-                                  Con campo `model` (solo tappa ⑤): bridge
+                                  Con campo `model` (solo step "code"): bridge
                                   all'endpoint reale Hetzner, allowlist e
                                   circuito di protezione del change
-                                  endpoint-remoto-hetzner (Bearer solo qui)
+                                  endpoint-remoto-hetzner (Bearer solo qui).
+                                  Step "code" (laboratorio codice, change
+                                  laboratorio-code): tetto 4096, allowlist IP,
+                                  semaforo 1-generazione, niente backpressure,
+                                  timeout dedicato, routing sul coder dedicato
+  GET  /api/admin/code-ips     -> allowlist IP del laboratorio codice (pannello)
+  POST /api/admin/code-ips     -> {ips: [..]|"..,.."} salvataggio allowlist
+                                  (IP esatti, validati; runtime, persistita)
   POST /api/admin/remote       -> {action: on|off|unlock} interruttore e
                                   sblocco dell'endpoint reale (pagina admin)
 
 Config via env:
   SKILL_URL, LLAMA_URL, GATEWAY_PORT
-  HETZNER_URL, HETZNER_API_KEY  endpoint reale (tappa ⑤); senza token la
-                     funzione resta spenta, il laboratorio è identico a prima
+  HETZNER_URL, HETZNER_API_KEY  endpoint reale (laboratorio codice); senza
+                     token la funzione resta spenta, il laboratorio è identico
+                     a prima
   LAB_SESSIONS_DIR   dir del DB sqlite delle sessioni (default <repo>/sessions,
                      file sessions.db; il vecchio sessions.jsonl è archivio legacy)
   LAB_ACTIVE_WINDOW  secondi per considerare un client "connesso" (default 300)
@@ -58,6 +66,7 @@ solo HTTP) e viceversa — la separazione che conta è quella del contratto.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import sqlite3
@@ -75,18 +84,23 @@ from backend.costi import stima_remota as _stima_remota
 _HERE = os.path.dirname(os.path.abspath(__file__))
 SKILL_URL = os.environ.get("SKILL_URL", "http://localhost:8080").rstrip("/")
 LLAMA_URL = os.environ.get("LLAMA_URL", "http://localhost:8081").rstrip("/")
-# Endpoint reale (change endpoint-remoto-hetzner): OpenAI-compat, tappa ⑤.
+# Endpoint reale (change endpoint-remoto-hetzner): OpenAI-compat, tappa code.
 # Il token arriva da laboratory/.env via compose e NON ha default: senza token
 # la funzione resta spenta (available=false), il laboratorio è identico a prima.
 HETZNER_URL = os.environ.get(
     "HETZNER_URL", "https://inference.hetzner.com/api/v1").rstrip("/")
 HETZNER_API_KEY = os.environ.get("HETZNER_API_KEY")
-# Coder dedicato alla ⑤ (profilo compose opzionale «coder»): un secondo
+# Coder dedicato al laboratorio codice (profilo compose «coder»): un secondo
 # llama-server con qwen2.5-coder-1.5b. Deciso sul RAM misurato: 2×~1,9 GB di
 # peak (spike/REPORT.md) entrano larghi nel mini PC del campo (24 GB); sul
 # Pi 3 il profilo non si attiva e tutto resta com'è.
 CODER_URL = os.environ.get("CODER_URL", "http://localhost:8082").rstrip("/")
 GATEWAY_PORT = int(os.environ.get("GATEWAY_PORT", "8090"))
+# Finestre di contesto dichiarate ai client (change laboratorio-code): il
+# contatore della pagina deve mostrare quella del servizio che risponde DAVVERO
+# in quella tappa (-c del compose: main 2048, coder 8192).
+LLAMA_CTX = int(os.environ.get("LLAMA_CTX", "2048"))
+CODER_CTX = int(os.environ.get("CODER_CTX", "8192"))
 LAB_SESSIONS_DIR = os.environ.get("LAB_SESSIONS_DIR") or os.path.join(_HERE, "..", "sessions")
 LAB_ACTIVE_WINDOW = int(os.environ.get("LAB_ACTIVE_WINDOW", "300"))
 
@@ -101,6 +115,13 @@ _PROXY_TIMEOUT = 240  # s: i modelli lenti NON fanno streaming: gli header di
                       # campo). 240 s, con nginx a 300 e il client a 270: il
                       # JSON del gateway arriva sempre PRIMA della pagina
                       # d'errore HTML del proxy.
+_CODE_PROXY_TIMEOUT = 900  # s: SOLO la path code (D5 laboratorio-code): una
+                      # pagina intera sono 4096 token a ~4,5 t/s = 15 min.
+                      # Sotto quella cadenza il 504 onesto è l'esito corretto,
+                      # non un rifiuto preventivo. nginx sta sopra (960 s) e il
+                      # client della pagina code pure (930 s): stessa catena
+                      # del 240/270/300, scalata. Le remote di code restano su
+                      # _PROXY_TIMEOUT: i loro limiti li governa Hetzner.
 _STATUS_TIMEOUT = 2   # s: probe rapido
 
 # Parametri del bridge chat (costanti, come l'adapter) — non manipolabili dal client.
@@ -109,10 +130,14 @@ _CHAT_MAX_TURNS = 32
 _CHAT_DEFAULT_TEMP = 0.7
 _CHAT_DEFAULT_MAX_TOKENS = 256
 _CHAT_MAX_TOKENS_CEILING = 768
-# Tetto token per tappa (policy del gateway, change temperatura-tappa5): la ⑤
-# genera codice HTML/CSS e il default basso la taglia a metà tag — la skill ha
-# già misurato che servono 768 (nemmeno 512 bastavano al suo JSON pretty-print).
-_CHAT_STEP_MAX_TOKENS = {"5": 768}
+# Tappa logica del laboratorio codice (D1 laboratorio-code): NON è la vecchia
+# "5" — policy propria, separata dal dict delle tappe ①–④.
+_CODE_STEP = "code"
+# Tetto token per tappa (policy del gateway): il laboratorio codice genera una
+# pagina HTML+CSS completa in file unico e il ceiling difensivo delle altre
+# chat la taglierebbe a un quarto — tetto e ceiling DEDICATI (D3). Le tappe
+# ①–④ restano al regime di sempre (default 256, ceiling 768).
+_CHAT_STEP_MAX_TOKENS = {"code": 4096}
 # Backpressure (revisione 11): se la mediana delle chat RECENTI scende sotto
 # questa cadenza (token/s visti dal gateway), le nuove arrivano 429 con
 # retry_after — il client avvisa il ragazzo e riprova da solo. Mai a freddo:
@@ -129,11 +154,20 @@ _CHAT_TPS_WINDOW_S = 45.0
 # quante osservazioni recenti guardare prima del filtro d'età (le più fresche)
 _CHAT_TPS_POOL = 64
 _ROLE_OK = ("system", "user", "assistant")
+# Semaforo del laboratorio codice (D6): il coder ha un solo slot di decodifica,
+# accodare raddopperebbe attese già lunghe — max 1 generazione locale alla
+# volta, le concorrenti ricevono 429 con retry_after (pattern overload: la
+# pagina avvisa e riprova da sola, il turno non si perde).
+_CODE_BUSY = threading.Lock()
+_CODE_BUSY_RETRY_AFTER_S = 15
+# chiave del kv `state`: allowlist IP del laboratorio codice (IP ESATTI
+# separati da virgola — al campo le postazioni hanno indirizzi fissi, D2)
+_KV_CODE_IPS = "code_ips"
 
 # --- endpoint reale (change endpoint-remoto-hetzner) ------------------------
 # Allowlist dei modelli remoti (design D2): swappable in una riga. Il gateway
 # è l'unico a conoscere URL e credenziali: il client sceglie solo il nome, e
-# solo dalla tappa ⑤ (il vincolo è del server, non della pagina).
+# solo dal laboratorio codice (il vincolo è del server, non della pagina).
 # NOTA DI CAMPO (2026-08-17): Kimi-K2.7-Code risponde «model use not
 # permitted» col nostro token (403 in 200 ms) — rimosso finché Hetzner non
 # lo abilita per l'account; il listino in costi.py resta, per quando torna.
@@ -164,14 +198,14 @@ _KV_REMOTE_REASON = "remote_trip_reason"
 
 _MODEL_CACHE: dict = {"name": None, "ts": 0.0}
 
-# --- coder dedicato alla tappa ⑤ (profilo opzionale) -------------------------
+# --- coder dedicato al laboratorio codice (profilo «coder») ------------------
 _CODER_CACHE: dict = {"ok": None, "ts": 0.0, "name": None, "name_ts": 0.0}
 
 
 def _coder_reachable() -> bool:
-    """Il coder della ⑤ è attivo? Probe con cache breve (30 s): le chat LOCALI
-    della tappa ⑤ gli vengono instradate; assente → percorso di sempre, senza
-    errori per il ragazzo (pattern auto, come LAB_BACKEND della skill)."""
+    """Il coder del laboratorio codice è attivo? Probe con cache breve (30 s):
+    le chat LOCALI dello step code gli vengono instradate; assente → percorso
+    di sempre, senza errori per il ragazzo (pattern auto, come LAB_BACKEND)."""
     now = time.time()
     if _CODER_CACHE["ok"] is not None and now - _CODER_CACHE["ts"] < 30:
         return _CODER_CACHE["ok"]
@@ -188,7 +222,8 @@ def _coder_reachable() -> bool:
 
 def _coder_status() -> dict:
     """Stato del coder per `/api/model-status`: attivo e nome del modello
-    (l'opzione «Modello locale» della ⑤ dichiara CHI risponde davvero)."""
+    (l'opzione «Modello locale» del laboratorio codice dichiara CHI risponde
+    davvero)."""
     if not _coder_reachable():
         return {"active": False, "model": None}
     now = time.time()
@@ -210,8 +245,31 @@ def _coder_status() -> dict:
     return {"active": True, "model": _CODER_CACHE["name"]}
 
 
+def _code_status(ip: str) -> dict:
+    """Stato del laboratorio codice PER CHI CHIEDE (D2 laboratorio-code):
+    `allowed` è l'esito dell'IP del richiedente — la lista degli IP abilitati
+    non lascia mai il gateway. `model`/`ctx` dichiarano chi risponde davvero
+    in questa tappa: il coder dedicato quando attivo, il modello principale
+    altrimenti (fallback dichiarato dall'etichetta)."""
+    cd = _coder_status()
+    if cd["active"]:
+        model, ctx = cd["model"], CODER_CTX
+    else:
+        model, ctx = _llama_model_name(), LLAMA_CTX
+    return {"allowed": ip in _code_ips(), "active": cd["active"],
+            "model": model, "ctx": ctx}
+
+
 def _clamp(v, lo, hi):
     return lo if v < lo else hi if v > hi else v
+
+
+def _code_ips() -> list[str]:
+    """Allowlist IP del laboratorio codice dal kv (IP esatti, virgola-separati).
+    Lista vuota (mai configurata) = laboratorio spento per tutti: l'accesso lo
+    dà l'educatore, nessun open-by-default."""
+    raw = _TRACKER.get_state(_KV_CODE_IPS) or ""
+    return [ip for ip in (p.strip() for p in raw.split(",")) if ip]
 
 
 def _overloaded(points: list[dict]) -> bool:
@@ -248,12 +306,16 @@ def _normalize_chat_body(client: dict, step: str | None = None,
     except (TypeError, ValueError):
         temp = _CHAT_DEFAULT_TEMP
     temp = _clamp(temp, 0.0, 1.5)
-    default_mt = _CHAT_STEP_MAX_TOKENS.get(str(step), _CHAT_DEFAULT_MAX_TOKENS)
+    # default e ceiling del tetto token dipendono dalla tappa: lo step code ha
+    # il TETTO DEDICATO (4096) anche come ceiling — le altre restano a 256/768
+    step_key = str(step) if step is not None else None
+    default_mt = _CHAT_STEP_MAX_TOKENS.get(step_key, _CHAT_DEFAULT_MAX_TOKENS)
+    ceiling = _CHAT_STEP_MAX_TOKENS.get(step_key, _CHAT_MAX_TOKENS_CEILING)
     try:
         mt = int(client.get("max_tokens", default_mt))
     except (TypeError, ValueError):
         mt = default_mt
-    mt = _clamp(mt, 16, _CHAT_MAX_TOKENS_CEILING)
+    mt = _clamp(mt, 16, ceiling)
     out = {"messages": out_msgs, "temperature": temp, "max_tokens": mt,
            "stream": False}
     if model:
@@ -547,27 +609,39 @@ class SessionTracker:
         round-trip, attesa e coda incluse. Non è il benchmark puro del modello:
         è il ritmo che il ragazzo sperimenta, che è la lezione.
         `rejected` sono i 429 di backpressure: per il grafico dell'educatore,
-        dove il carico che NON è passato si vede quanto quello passato."""
+        dove il carico che NON è passato si vede quanto quello passato.
+        `code` è il pool SEPARATO del laboratorio codice (D4 laboratorio-code):
+        generare una pagina intera a 2–5 t/s è il caso normale, non un
+        sovraccarico — i suoi punti restano visibili ma il cancello delle
+        chat ①–④ legge SOLO `points`, mai questi."""
         with self._lock:
-            pts = []
-            rej = []
+            pts: list[dict] = []
+            rej: list[dict] = []
+            cpts: list[dict] = []
+            crej: list[dict] = []
             for cid, s in self._sessions.items():
                 for row in s["recent"]:
                     if row.get("kind") != "chat" or row.get("endpoint"):
                         # le chat remote non misurano IL MODELLO LOCALE: non
                         # producono punti (change endpoint-remoto-hetzner, D9)
                         continue
+                    is_code = str(row.get("step") or "") == _CODE_STEP
                     tok_out, ms = row.get("tok_out"), row.get("ms")
                     if tok_out and ms:
-                        pts.append({"ts": row["ts"], "client": cid,
-                                    "tok_in": row.get("tok_in"), "tok_out": tok_out,
-                                    "ms": ms,
-                                    "tps": round(tok_out / (ms / 1000.0), 1)})
+                        p = {"ts": row["ts"], "client": cid,
+                             "tok_in": row.get("tok_in"), "tok_out": tok_out,
+                             "ms": ms,
+                             "tps": round(tok_out / (ms / 1000.0), 1)}
+                        (cpts if is_code else pts).append(p)
                     elif row.get("status") == 429:
-                        rej.append({"ts": row["ts"], "client": cid})
+                        (crej if is_code else rej).append(
+                            {"ts": row["ts"], "client": cid})
             pts.sort(key=lambda p: p["ts"])
             rej.sort(key=lambda r: r["ts"])
-            return {"points": pts[-limit:], "rejected": rej[-limit:]}
+            cpts.sort(key=lambda p: p["ts"])
+            crej.sort(key=lambda r: r["ts"])
+            return {"points": pts[-limit:], "rejected": rej[-limit:],
+                    "code": {"points": cpts[-limit:], "rejected": crej[-limit:]}}
 
 
 _TRACKER = SessionTracker(os.path.join(LAB_SESSIONS_DIR, "sessions.db"))
@@ -808,6 +882,23 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, data, ctype)
 
     # --- bridge chat verso llama-server (tappe 1/2/4) ---------------------
+    def _is_code(self) -> bool:
+        """La richiesta è della tappa del laboratorio codice (step "code")?"""
+        return str(self._step or "") == _CODE_STEP
+
+    def _code_allowed(self) -> bool:
+        """Gate IP del laboratorio codice (D2): le tappe ①–④ non hanno gate;
+        lo step code passa solo se l'IP di chi chiede è nell'allowlist del kv."""
+        return (not self._is_code()) or (self._ip in _code_ips())
+
+    def _code_forbidden(self) -> None:
+        """403 chiaro per postazione non abilitata: nessuna chiamata al modello,
+        la riga resta registrata (self._meta è già a punto)."""
+        self._send_json(403, {
+            "error": "il laboratorio codice non è attivo per questa postazione — "
+                     "lo abilita l'educatore dal pannello admin",
+            "code_forbidden": True})
+
     def _chat_llama(self, raw: bytes) -> None:
         """POST /api/chat -> bridge a llama /v1/chat/completions, body normalizzato."""
         try:
@@ -836,10 +927,20 @@ class Handler(BaseHTTPRequestHandler):
         self._meta = {"kind": "chat", "step": self._step, "in_len": len(raw), "out_len": 0,
                       "in_text": last_user or None, "turns": len(body["messages"])}
 
+        # gate IP (D2): su TUTTE le richieste dello step code — prima di ogni
+        # altra policy, senza toccare il modello
+        if not self._code_allowed():
+            self._code_forbidden()
+            return
+
         data = json.dumps(body).encode("utf-8")
+        is_code = self._is_code()
         # backpressure: modello già in affanno → 429 con retry_after invece di
-        # accodare un'altra attesa (il client avvisa il ragazzo e riprova)
-        if _overloaded(_TRACKER.tps_points(_CHAT_TPS_POOL)["points"]):
+        # accodare un'altra attesa (il client avvisa il ragazzo e riprova).
+        # MAI sulla tappa code (D4): generare una pagina intera a bassa cadenza
+        # è il suo caso normale, non un sovraccarico — e i suoi punti vivono
+        # in un pool separato, quindi non lo fanno nemmeno scattare.
+        if not is_code and _overloaded(_TRACKER.tps_points(_CHAT_TPS_POOL)["points"]):
             self._send_json(
                 429,
                 {"error": "laboratorio sovraccarico: il modello risponde troppo "
@@ -848,19 +949,42 @@ class Handler(BaseHTTPRequestHandler):
                  "retry_after": _CHAT_RETRY_AFTER_S},
                 extra={"Retry-After": str(_CHAT_RETRY_AFTER_S)})
             return
-        # target: la ⑤ usa il CODER dedicato se attivo (profilo opzionale),
-        # con fallback trasparente sul modello principale (pattern auto). Le
-        # altre tappe non cambiano percorso.
+        # semaforo (D6): una generazione locale alla volta per la tappa code —
+        # il coder ha un solo slot di decodifica, accodare raddoppia attese
+        # già lunghe. 429 onesto con retry_after (la pagina riprova da sola).
+        if is_code and not _CODE_BUSY.acquire(blocking=False):
+            self._send_json(
+                429,
+                {"error": "una generazione alla volta: il laboratorio codice è "
+                          "già occupato, riprovo io tra poco",
+                 "busy": True, "retry_after": _CODE_BUSY_RETRY_AFTER_S},
+                extra={"Retry-After": str(_CODE_BUSY_RETRY_AFTER_S)})
+            return
+        try:
+            self._chat_generate(body, data, is_code)
+        finally:
+            # rilascio a fine generazione, QUALUNQUE esito (anche errore):
+            # un modello giù non lascia il laboratorio bloccato a vita
+            if is_code:
+                _CODE_BUSY.release()
+
+    def _chat_generate(self, body: dict, data: bytes, is_code: bool) -> None:
+        """Dispatch verso il servizio modello (estratta per il finally del
+        semaforo): target, timeout dedicato della tappa code, risposta."""
+        # target: la tappa code usa il CODER dedicato se attivo (profilo
+        # opzionale), con fallback trasparente sul modello principale (pattern
+        # auto). Le altre tappe non cambiano percorso.
         targets = [LLAMA_URL]
-        if str(self._step or "") == "5" and _coder_reachable():
+        if is_code and _coder_reachable():
             targets = [CODER_URL, LLAMA_URL]
+        timeout = _CODE_PROXY_TIMEOUT if is_code else _PROXY_TIMEOUT
         payload = None
         for i, target in enumerate(targets):
             req = urllib.request.Request(
                 target + "/v1/chat/completions", data=data,
                 headers={"Content-Type": "application/json"}, method="POST")
             try:
-                with urllib.request.urlopen(req, timeout=_PROXY_TIMEOUT) as r:
+                with urllib.request.urlopen(req, timeout=timeout) as r:
                     payload = json.loads(r.read().decode("utf-8"))
                 break
             except urllib.error.HTTPError as e:  # HTTPError è sotto URLError
@@ -939,13 +1063,13 @@ class Handler(BaseHTTPRequestHandler):
             self._meta["trace"] = out["trace"]
         self._send_json(200, out)
 
-    # --- bridge chat verso l'endpoint reale (tappa ⑤) ----------------------
+    # --- bridge chat verso l'endpoint reale (laboratorio codice) -----------
     def _chat_remote(self, client: dict) -> None:
         """POST /api/chat con `model` → endpoint reale (endpoint-remoto-hetzner).
-        Allowlist e vincolo «solo tappa ⑤» sono del gateway (D2); il Bearer
-        vive SOLO qui: mai in response, trace o log (D4). Il circuito di
-        protezione (D5) rifiuta PREDITTIVAMENTE senza auto-retry lato client
-        (D6: `remote_disabled` ≠ overload locale 429)."""
+        Allowlist modelli, gate IP e vincolo «solo laboratorio codice» sono del
+        gateway (D2); il Bearer vive SOLO qui: mai in response, trace o log
+        (D4). Il circuito di protezione (D5) rifiuta PREDITTIVAMENTE senza
+        auto-retry lato client (D6: `remote_disabled` ≠ overload locale 429)."""
         model = client.get("model")
         # contenuto in ingresso a delta (D3): l'ultimo messaggio utente
         try:
@@ -958,11 +1082,17 @@ class Handler(BaseHTTPRequestHandler):
                       "in_len": len(json.dumps(client).encode("utf-8")), "out_len": 0,
                       "in_text": last_user or None}
 
+        # gate IP del laboratorio codice: vale anche per le remote (spec
+        # endpoint-remoto: «Postazione non abilitata»), PRIMA di ogni uscita
+        if not self._code_allowed():
+            self._code_forbidden()
+            return
         if model not in _REMOTE_MODELS:
             self._send_json(400, {"error": "modello non disponibile"})
             return
-        if str(self._step or "") != "5":
-            self._send_json(400, {"error": "i modelli remoti si usano solo nella tappa ⑤"})
+        if not self._is_code():
+            self._send_json(400, {"error": "i modelli remoti si usano solo "
+                                           "nel laboratorio codice"})
             return
         self._meta["endpoint"] = model  # ogni riga remota è marcata, anche gli errori
 
@@ -1099,13 +1229,59 @@ class Handler(BaseHTTPRequestHandler):
     # --- model-status -----------------------------------------------------
     def _model_status(self) -> None:
         """GET /api/model-status -> {model_active, model?, clients, remote,
-        coder} (200): `coder` dice se la ⑤ ha il suo modello dedicato."""
+        coder, code} (200): `coder` dice se il servizio dedicato al codice è
+        attivo; `code` è lo stato del laboratorio codice PER L'IP DI CHI CHIEDE
+        (allowed + chi risponde davvero), senza mai esporre l'allowlist."""
         active = _llama_reachable(LLAMA_URL)
         clients = _TRACKER.active_list(LAB_ACTIVE_WINDOW)["total"]
         model = _llama_model_name() if active else None
         self._send_json(200, {"model_active": active, "model": model,
                               "clients": clients, "remote": _REMOTE.status(),
-                              "coder": _coder_status()})
+                              "coder": _coder_status(),
+                              "code": _code_status(self._ip)})
+
+    # --- allowlist IP del laboratorio codice (pannello educatore) ----------
+    def _admin_code_ips_get(self) -> None:
+        """GET /api/admin/code-ips: la lista per l'editing nel pannello (il
+        pannello è roba dell'educatore; ai client generici arriva solo l'esito
+        personale via model-status.code.allowed)."""
+        self._send_json(200, {"ips": _code_ips()})
+
+    def _admin_code_ips_post(self, raw: bytes) -> None:
+        """POST /api/admin/code-ips {ips: [..] | "..,.."}: salvataggio a
+        runtime (valida dal salvataggio, persistito nel kv). Solo IP ESATTI:
+        niente CIDR o wildcard — al campo le postazioni hanno indirizzi fissi."""
+        try:
+            body = json.loads(raw.decode("utf-8")) if raw else {}
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            body = None
+        ips = body.get("ips") if isinstance(body, dict) else None
+        if isinstance(ips, str):
+            ips = ips.split(",")
+        if not isinstance(ips, list):
+            self._send_json(400, {"error": "campo 'ips' mancante: lista di "
+                                           "indirizzi o stringa separata da virgole"})
+            return
+        clean: list[str] = []
+        bad: list[str] = []
+        for item in ips:
+            ip = str(item).strip()
+            if not ip:
+                continue  # buchi di formattazione ("a,,b") non sono errori
+            try:
+                ipaddress.ip_address(ip)  # esatto: rifiuta CIDR e wildcard
+            except ValueError:
+                bad.append(ip)
+                continue
+            if ip not in clean:
+                clean.append(ip)
+        if bad:
+            self._send_json(400, {"error": "IP non validi (servono indirizzi "
+                                           "esatti, niente CIDR): " + ", ".join(bad),
+                                  "ips": _code_ips()})
+            return
+        _TRACKER.set_state(_KV_CODE_IPS, ",".join(clean))
+        self._send_json(200, {"ips": _code_ips()})
 
     # --- comandi educatore sull'endpoint reale -----------------------------
     def _admin_remote(self, raw: bytes) -> None:
@@ -1178,6 +1354,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/model-status":
             self._model_status()
             return
+        if path == "/api/admin/code-ips":
+            self._admin_code_ips_get()
+            return
         if path == "/api/tps":
             self._send_json(200, _TRACKER.tps_points())
             return
@@ -1215,9 +1394,11 @@ class Handler(BaseHTTPRequestHandler):
             self._proxy("POST", "/scaffold", body)
         elif self.path == "/api/admin/remote":
             self._admin_remote(body)
+        elif self.path == "/api/admin/code-ips":
+            self._admin_code_ips_post(body)
         elif self.path == "/api/chat":
-            # campo `model` = endpoint reale (tappa ⑤); assente = percorso
-            # locale di sempre — il client di oggi non cambia (design D1)
+            # campo `model` = endpoint reale (laboratorio codice); assente =
+            # percorso locale di sempre — il client di oggi non cambia (design D1)
             try:
                 client = json.loads(body.decode("utf-8")) if body else {}
             except (json.JSONDecodeError, UnicodeDecodeError):

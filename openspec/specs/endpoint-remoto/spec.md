@@ -25,22 +25,22 @@ L'accesso all'endpoint remoto SHALL richiedere un token Bearer configurato in un
 
 ### Requirement: Selettore del modello in tappa ⑤
 
-La tappa ⑤ SHALL offrire un selettore tra il modello locale e i modelli remoti dell'endpoint (allowlist dichiarata lato server: `Qwen/Qwen3.6-35B-A3B-FP8` e `DeepSeek-V4-Flash-0731`; modelli che l'endpoint rifiuta per il token — es. Kimi-K2.7-Code, «model use not permitted», verificato al campo — MUST NOT restare nell'allowlist), visibile SOLO quando: token configurato, interruttore dell'educatore su ON, circuito di protezione non scattato. Il default SHALL essere il modello locale. Il cambio modello a conversazione avviata SHALL azzerare la conversazione (il prompt seme resta nell'input), come già accade per i preset di tappa ②. Il selettore SHALL mostrare il budget di richieste disponibile nella finestra corrente (es. «7/10»). Nessun'altra tappa SHALL esporre modelli remoti.
+Il laboratorio codice (pagina dedicata della quinta tappa, step `"code"`) SHALL offrire un selettore tra il modello locale e i modelli remoti dell'endpoint (allowlist dichiarata lato server: `Qwen/Qwen3.6-35B-A3B-FP8` e `DeepSeek-V4-Flash-0731`; modelli che l'endpoint rifiuta per il token — es. Kimi-K2.7-Code, «model use not permitted», verificato al campo — MUST NOT restare nell'allowlist), visibile SOLO quando: token configurato, interruttore dell'educatore su ON, circuito di protezione non scattato. Il default SHALL essere il modello locale. Il cambio modello a conversazione avviata SHALL azzerare la conversazione (il prompt seme resta nell'input), come già accade per i preset di tappa ②. Il selettore SHALL mostrare il budget di richieste disponibile nella finestra corrente (es. «7/10»). Nessuna chat delle tappe ①–④ SHALL esporre modelli remoti.
 
 #### Scenario: Condizioni soddisfatte
 
-- **WHEN** il ragazzo apre la tappa ⑤ con token configurato, interruttore ON e protezione non scattata
+- **WHEN** il ragazzo apre il laboratorio codice da una postazione abilitata, con token configurato, interruttore ON e protezione non scattata
 - **THEN** il selettore offre il modello locale (default) e i due modelli remoti dell'allowlist, con il budget richieste visibile; le opzioni remote dichiarano il PROVIDER (es. «Hetzner · Qwen3.6-35B»), come quella locale dichiara «Modello locale»
 
 #### Scenario: Nessun token, nessun selettore
 
 - **WHEN** il token non è configurato
-- **THEN** in tappa ⑤ non esiste alcun selettore: si chattarà solo col modello locale, come oggi
+- **THEN** nel laboratorio codice non esiste alcun selettore: si genera solo col modello locale
 
 #### Scenario: Interruttore educatore OFF
 
 - **WHEN** l'educatore spegne l'endpoint reale dal pannello admin
-- **THEN** il selettore sparisce dalla tappa ⑤ e la chat torna al modello locale, anche a conversazione aperta
+- **THEN** il selettore sparisce dal laboratorio codice e la chat torna al modello locale, anche a conversazione aperta
 
 #### Scenario: Protezione scattata
 
@@ -55,15 +55,15 @@ La tappa ⑤ SHALL offrire un selettore tra il modello locale e i modelli remoti
 #### Scenario: Solo la tappa ⑤
 
 - **WHEN** una chat delle tappe ①–④ invoca il gateway
-- **THEN** non c'è modo di selezionare un modello remoto: l'offerta e l'enforcement vivono nella ⑤ e nel gateway
+- **THEN** non c'è modo di selezionare un modello remoto: l'offerta e l'enforcement vivono nel laboratorio codice e nel gateway
 
 ### Requirement: Chiamate all'endpoint reale tramite gateway
 
-Le chat con modello remoto SHALL passare dal gateway, che valida il campo `model` contro l'allowlist, lo inoltra all'endpoint remoto con autenticazione Bearer e un body solo OpenAI standard (niente parametri proprieri del backend locale), e applica le stesse normalizzazioni difensive delle chat locali (clamp temperatura, tetto token per tappa, ruoli). Richieste con modello fuori allowlist o provenienti da una tappa diversa dalla ⑤ SHALL essere rifiutate dal gateway. La risposta verso la pagina SHALL avere la stessa forma delle chat locali (reply, usage, finish_reason, trace `{ }`), con usage REALI dell'endpoint. Il token Bearer MUST NOT comparire in alcuna risposta, trace o log verso il client.
+Le chat con modello remoto SHALL passare dal gateway, che valida il campo `model` contro l'allowlist, lo inoltra all'endpoint remoto con autenticazione Bearer e un body solo OpenAI standard (niente parametri propri del backend locale), e applica le stesse normalizzazioni difensive delle chat locali (clamp temperatura, tetto token per tappa, ruoli). Richieste con modello fuori allowlist o provenienti da una tappa diversa da quella del laboratorio codice SHALL essere rifiutate dal gateway; le richieste remote del laboratorio codice MUST ALSO rispettare il gate di accesso per IP della tappa. La risposta verso la pagina SHALL avere la stessa forma delle chat locali (reply, usage, finish_reason, trace `{ }`), con usage REALI dell'endpoint. Il token Bearer MUST NOT comparire in alcuna risposta, trace o log verso il client.
 
 #### Scenario: Richiesta valida inoltrata
 
-- **WHEN** la tappa ⑤ invia una chat con un modello dell'allowlist
+- **WHEN** il laboratorio codice invia una chat con un modello dell'allowlist, da una postazione abilitata
 - **THEN** il gateway inoltra all'endpoint remoto un body standard (messages, temperature, max_tokens, stream=false) con il modello scelto, e la pagina riceve reply/usage/finish_reason/trace nella forma già nota
 
 #### Scenario: Modello fuori allowlist
@@ -73,8 +73,13 @@ Le chat con modello remoto SHALL passare dal gateway, che valida il campo `model
 
 #### Scenario: Modello remoto richiesto fuori dalla tappa ⑤
 
-- **WHEN** una richiesta con `model` arriva senza l'intestazione di tappa ⑤
-- **THEN** il gateway la rifiuta: il vincolo «solo ⑤» è del server, non del client
+- **WHEN** una richiesta con `model` arriva con l'intestazione di una tappa diversa da quella del laboratorio codice
+- **THEN** il gateway la rifiuta: il vincolo è del server, non del client
+
+#### Scenario: Postazione non abilitata
+
+- **WHEN** una richiesta remota arriva da un IP fuori dall'allowlist del laboratorio codice
+- **THEN** il gateway la rifiuta come le richieste locali di quella tappa: nessuna chiamata parte verso l'endpoint esterno
 
 #### Scenario: Il token non attraversa il confine
 

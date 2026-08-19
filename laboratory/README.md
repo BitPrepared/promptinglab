@@ -74,10 +74,10 @@ termina naturalmente producendo uno scaffold valido.
 
 Vedi `docker-compose.yml` per la versione containerizzata. Topologia a 3 tier:
 nginx (statici + proxy `/api/*`) → gateway (`backend.gateway`) → skill/llama.
-L'host è sostituibile: **mini PC** (modello 1.5B, `make up`) **oppure Pi 3 /
-1 GB** (0.5B obbligatorio, `make pi-up` — override `docker-compose.pi.yml`);
-i client cambiano solo l'indirizzo. `spike/REPORT.md` ha i numeri di
-fattibilità misurati (tok/s, RAM).
+L'host è sostituibile: **mini PC** (modello 1.5B + coder, `make up`) **oppure
+Pi 3 / 1 GB** (0.5B obbligatorio, `make pi-up` — override `docker-compose.pi.yml`,
+senza coder); i client cambiano solo l'indirizzo. `spike/REPORT.md` ha i
+numeri di fattibilità misurati (tok/s, RAM).
 
 ## Test
 
@@ -86,32 +86,62 @@ cd laboratory
 python3 -m unittest discover -s tests
 ```
 
-## Modello coder dedicato alla tappa ⑤ (opzionale)
+## Laboratorio codice (pagina `code.html`)
 
-La ⑤ genera codice HTML/CSS: con `make up-coder` parte un secondo
-llama-server con **qwen2.5-coder-1.5b** e il gateway instrada lì le chat
-**locali** della ⑤. Le altre tappe e la skill continuano sul modello
-principale, che non cambia.
+La vecchia tappa «⑤ Prompt Engineering» è un laboratorio autonomo su pagina
+dedicata, **aperto solo dalle postazioni che l'educatore abilita**: il modello
+scrive una **pagina HTML completa** — HTML e CSS in un **file unico** — e il
+ragazzo se la porta via con **Copia**, **Scarica .html** o **Apri**, con
+anteprima in sandbox. Dalla pagina del percorso guidato (`index.html`, ora
+①–④) non ci sono link: l'accesso lo dà l'educatore, che apre `code.html` dal
+pannello `/admin`.
+
+**Un solo comando** (`make up`) porta su DUE llama: il modello principale
+(tappe ①–④ e skill, `-c 2048` come sempre) e il **coder dedicato**
+`qwen2.5-coder-1.5b` con `-c 8192` (la pagina intera ha bisogno di contesto;
+KV ~+250 MB su 24 GB verificati). Prerequisito: il GGUF del coder in `models/`
+— **senza, `make up` non parte** (il fallback resta `make demo`). Il Pi 3 non
+attiva il coder: `make pi-up` resta com'è e il codice gira sul modello
+principale, che però tronca le pagine a `-c 2048` (fallback dichiarato
+dall'etichetta). Cambiare file: `CODER_FILE=... make up`.
 
 ```bash
-# scarica il GGUF del coder come gli altri (models/), poi:
-make up-coder       # = make up + profilo coder
+# 1) GGUF in models/: qwen2.5-1.5b (main) + qwen2.5-coder-1.5b (coder)
+# 2) make up
+# 3) dal pannello /admin, riquadro «Laboratorio codice»: scrivi gli IP delle
+#    postazioni abilitate (le chips propongono quelli già visti) e [Salva] —
+#    vale da subito, senza riavvii, e sopravvive ai restart
 ```
 
-- **RAM**: 2 istanze da ~1,9 GB di peak (misurati, `spike/REPORT.md`) =
-  ~3,8 GB — il mini PC del campo (24 GB verificati) li tiene con ampio
-  margine; sul **Pi 3 il profilo non si attiva** e tutto resta com'è.
-- **Fallback automatico**: se il coder non è attivo (`make up` normale, o il
-  processo cade a metà richiesta), la ⑤ usa il modello principale senza
-  errori per il ragazzo — pattern `auto`, come il backend della skill.
-- La tendina della ⑤ dichiara chi risponde: col coder attivo l'opzione dice
-  «Modello locale (qwen2.5-coder-1.5b)».
-- Cambiare il file del coder: `CODER_FILE=... make up-coder`.
+Come funziona (policy nel gateway, header `X-Step: code`):
 
-## Endpoint reale in tappa ⑤ (Hetzner Inference API) — opzionale
+- **Gate IP**: allowlist di IP **esatti** nel KV del gateway; chi non è in
+  lista riceve un 403 chiaro e la pagina lo dice in modo amichevole. La lista
+  non è mai esposta ai client: `model-status` riporta solo l'esito di chi
+  chiede.
+- **Tetto dedicato**: 4096 token di risposta (le chat ①–④ restano a
+  256/768); se la pagina esce troncata (`finish_reason: length`) la pagina
+  lo dice e il ragazzo lo riconduce al limite dichiarato.
+- **Una generazione alla volta** in locale: le richieste concorrenti ricevono
+  429 con `retry_after` e la pagina riprova da sola (countdown, turno non
+  perso). La lentezza del coder NON è un rifiuto: niente backpressure su
+  questa tappa, e i suoi punti token/s vivono in un pool separato che non
+  inquina il cancello delle chat ①–④.
+- **Attese lunghe**: 4096 token a ~4,5 t/s ≈ 15 minuti — la catena di timeout
+  di questa tappa è estesa (gateway 900 s, client 930 s, nginx 960 s); oltre,
+  un 504 JSON onesto. Lo spinner mostra i secondi che passano e la finestra
+  di contesto dichiarata è quella di chi risponde (8192 col coder, 2048 col
+  principale).
+- **Fallback dichiarato**: col coder attivo genera lui; se è giù (o cade a
+  metà richiesta), il modello principale — e la tendina dichiara sempre chi
+  risponde davvero.
+- Il **selettore del modello remoto** (endpoint reale, vedi sotto) e i
+  **consumi a due tabelle** vivono in questa pagina.
 
-La tappa ⑤ può confrontare il modello locale del campo con modelli open-weight
-di taglia superiore serviti dall'[Inference API di Hetzner](https://inference.hetzner.com)
+## Endpoint reale nel laboratorio codice (Hetzner Inference API) — opzionale
+
+Il laboratorio codice può confrontare il modello locale del campo con modelli
+open-weight di taglia superiore serviti dall'[Inference API di Hetzner](https://inference.hetzner.com)
 (sperimentale, gratuita; OpenAI-compat). Tutto passa **sempre dal gateway**:
 il token non arriva mai al browser.
 
@@ -125,13 +155,15 @@ make up        # o make demo
 
 Comportamento e vincoli (sono loro stessi parte della lezione):
 
-- **Selettore solo in tappa ⑤**, e solo se: token configurato, interruttore
-  dell'educatore su ON (default OFF, si comanda da `/admin`), circuito di
-  protezione non scattato. Cambiare modello azzera la conversazione.
+- **Selettore solo nel laboratorio codice**, e solo se: token configurato,
+  interruttore dell'educatore su ON (default OFF, si comanda da `/admin`),
+  circuito di protezione non scattato. Cambiare modello azzera la
+  conversazione (il prompt seme resta). Vale anche il gate IP della
+  postazione: le richieste remote da IP non abilitato non partono.
 - **I modelli grandi sul tier gratuito sono LENTI**: risposta non in streaming
-  e in coda — misurati anche 3 minuti per una card (768 token a ~4 t/s). Non
-  è un errore: lo spinner della ⑤ avvisa il ragazzo. Oltre 240 s il gateway
-  risponde con un errore chiaro (mai una pagina HTML di proxy).
+  e in coda — misurati anche minuti per una generazione. Non è un errore: lo
+  spinner avvisa il ragazzo. Oltre 240 s il gateway risponde con un errore
+  chiaro (mai una pagina HTML di proxy).
 - **Modelli offerti**: `Qwen/Qwen3.6-35B-A3B-FP8` e `DeepSeek-V4-Flash-0731`.
   `Kimi-K2.7-Code` non è in allowlist: col nostro token l'endpoint risponde
   «model use not permitted» (verificato al campo — forse va abilitato in
@@ -144,11 +176,11 @@ Comportamento e vincoli (sono loro stessi parte della lezione):
   da sola, lo sblocco funziona solo se le richieste vecchie sono uscite).
 - **Le sessioni con endpoint reale** sono evidenziate nel pannello (badge
   nuvola + nome modello); il grafico token/s resta quello del modello locale.
-- **Consumi**: in tappa ⑤ con modello remoto il riquadro mostra solo il
-  valore attuale — token **reali** dell'usage e costo API a **listino
-  standard** del modello (costanti didattiche in `backend/costi.py`, non il
-  prezzo dell'offerta sperimentale). Il confronto locale-vs-frontiera resta
-  calcolato sulle sole chat locali.
+- **Consumi**: nel laboratorio codice con modello remoto il riquadro mostra
+  DUE tabelle — token **reali** dell'usage e costo API a **listino standard**
+  del modello scelto (costanti didattiche in `backend/costi.py`, non il
+  prezzo dell'offerta sperimentale), più il confronto locale-vs-frontiera di
+  sempre, calcolato sulle sole chat locali.
 
 Senza `.env` il laboratorio è identico a prima: nessun selettore, nessuna
 richiesta esterna. Per cambiare i modelli offerti o i listini: allowlist in

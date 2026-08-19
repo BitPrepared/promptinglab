@@ -1,41 +1,48 @@
 # Makefile — laboratorio web.
 # Comandi Docker che "fanno quello che serve", con i dettagli annosi già gestiti:
-#  - il profilo `model` (senza, il container llama sopravvive e lascia reti stale)
-#  - il GGUF da montare (MODEL_FILE)
+#  - i profili `model` e `coder` (senza, i container llama sopravvivono e
+#    lasciano reti stale)
+#  - i GGUF da montare (MODEL_FILE, CODER_FILE)
 #  - la pulizia delle reti dangling (risolve i "network ... not found")
 #
 # Uso tipico:
-#   make up          avvia col modello (richiede il GGUF in models/)  [DEFAULT]
-#   make demo        avvia in modalità demo (mock, senza modello)
-#   make rebuild     ricostruisce le immagini e riparte col modello
-#   make down        ferma tutto (pulendo anche llama)
+#   make up          un comando, due llama (main + coder) e due laboratori
+#                    [DEFAULT; richiede i GGUF in models/, vedi README]
+#   make demo        avvia in modalità demo (mock, senza modelli)
+#   make rebuild     ricostruisce le immagini e riparte coi modelli
+#   make down        ferma tutto (pulendo anche i llama)
 #   make help        tutti i target
 
 # --- Variabili (sovrascrivibili: make up MODEL_FILE=... ) ---------------------
 # 1.5b = target mini PC (qualità migliore); 0.5b più leggero. Cambia con MODEL_FILE=.
 MODEL_FILE ?= qwen2.5-1.5b-instruct-q4_k_m.gguf
+CODER_FILE ?= qwen2.5-coder-1.5b-instruct-q4_k_m.gguf
 COMPOSE     := docker compose
-PROFILE     := --profile model
+# Un solo comando (design laboratorio-code, D7): `up` attiva ENTRAMBI i
+# profili — il main delle tappe ①–④ e il coder del laboratorio codice.
+# Il Pi 3 non attiva il coder: pi-up dichiara il profilo da solo, sotto.
+PROFILE     := --profile model --profile coder
+PROFILE_PI  := --profile model
 URL     ?= http://localhost:8090
 N       ?= 8
 TURNS   ?= 4
 RETRY   ?= 0
 
 .DEFAULT_GOAL := help
-.PHONY: help up pi-up up-coder demo down rebuild logs admin open status ps test clean clean-sessions loadtest pull
+.PHONY: help up pi-up demo down rebuild logs admin open status ps test clean clean-sessions loadtest pull
 
 help:  ## mostra questo aiuto
 	@echo "Laboratorio web — target disponibili:"
-	@echo "  make up        avvia col MODELLO (MODEL_FILE=$(MODEL_FILE))  [default con modello]"
-	@echo "  make demo      avvia in DEMO (mock, senza modello — chat 1/2/4 off, skill on)"
-	@echo "  make pi-up     come up, ma per host Pi 3 (override: 0.5B obbligatorio)"
-	@echo "  make up-coder  come up + coder dedicato alla ⑤ (mini PC; il Pi 3 non lo attiva)"
-	@echo "  make rebuild   ricostruisce le immagini (codice Python) e riparte col modello"
-	@echo "  make down      ferma e rimuove tutti i container (anche llama)"
+	@echo "  make up        UN comando, DUE llama: main (tappe ①–④) + coder (laboratorio codice)"
+	@echo "                 [richiede MODEL_FILE=$(MODEL_FILE) e CODER_FILE=$(CODER_FILE) in models/]"
+	@echo "  make demo      avvia in DEMO (mock, senza modello — chat ①–④ off, skill on)"
+	@echo "  make pi-up     come up ma per host Pi 3 (0.5B obbligatorio, SENZA coder)"
+	@echo "  make rebuild   ricostruisce le immagini (codice Python) e riparte coi modelli"
+	@echo "  make down      ferma e rimuove tutti i container (anche i due llama)"
 	@echo "  make clean-sessions  azzera lo storico delle sessioni (ferma il gateway)"
 	@echo "  make loadtest   simula N ragazzi in chat (N=8 TURNS=4 URL=...)"
 	@echo "  make logs      tail dei log di tutti i service (segui un utente: grep '#<cid>')"
-	@echo "  make admin     URL del pannello educatore (sessions, finestra/filtro IP)"
+	@echo "  make admin     URL del pannello educatore (sessions, finestra/filtro IP, allowlist codice)"
 	@echo "  make open      URL della pagina laboratorio"
 	@echo "  make ps        stato dei container"
 	@echo "  make status    probe: modello attivo + n. utenti (/api/model-status)"
@@ -44,25 +51,23 @@ help:  ## mostra questo aiuto
 	@echo "  make pull      scarica l'immagine llama.cpp"
 	@echo ""
 	@echo "Variabili:"
-	@echo "  MODEL_FILE=qwen2.5-0.5b-instruct-q4_k_m.gguf   cambia GGUF (0.5b/1.5b)"
+	@echo "  MODEL_FILE=qwen2.5-0.5b-instruct-q4_k_m.gguf   cambia GGUF main (0.5b/1.5b)"
+	@echo "  CODER_FILE=...                                 cambia GGUF del coder"
 
-up:  ## avvia col modello (richiede il GGUF in models/)
-	MODEL_FILE=$(MODEL_FILE) $(COMPOSE) $(PROFILE) up
+up:  ## avvia con ENTRAMBI i modelli (main + coder; richiede i GGUF in models/)
+	MODEL_FILE=$(MODEL_FILE) CODER_FILE=$(CODER_FILE) $(COMPOSE) $(PROFILE) up
 
-pi-up:  ## avvia col modello per host Pi 3 (0.5B obbligatorio, vedi docker-compose.pi.yml)
-	$(COMPOSE) -f docker-compose.yml -f docker-compose.pi.yml $(PROFILE) up
+pi-up:  ## avvia col modello per host Pi 3 (0.5B obbligatorio, vedi docker-compose.pi.yml; niente coder)
+	$(COMPOSE) -f docker-compose.yml -f docker-compose.pi.yml $(PROFILE_PI) up
 
-up-coder:  ## come up + coder dedicato alla ⑤ (2×~1,9 GB: mini PC, NON Pi 3)
-	MODEL_FILE=$(MODEL_FILE) $(COMPOSE) --profile model --profile coder up
-
-demo:  ## avvia in demo (mock, senza modello)
+demo:  ## avvia in demo (mock, senza modelli)
 	$(COMPOSE) up web gateway skill
 
-down:  ## ferma e rimuove tutti i container (sempre col profilo -> pulisce anche llama)
+down:  ## ferma e rimuove tutti i container (sempre coi profili -> pulisce anche i llama)
 	$(COMPOSE) $(PROFILE) down --remove-orphans
 
-rebuild: clean  ## ricostruisce le immagini e riparte col modello
-	MODEL_FILE=$(MODEL_FILE) $(COMPOSE) $(PROFILE) up --build
+rebuild: clean  ## ricostruisce le immagini e riparte coi modelli
+	MODEL_FILE=$(MODEL_FILE) CODER_FILE=$(CODER_FILE) $(COMPOSE) $(PROFILE) up --build
 
 logs:  ## tail dei log (-f)
 	$(COMPOSE) logs -f --tail=50
@@ -73,8 +78,9 @@ ps:  ## stato dei container
 status:  ## probe model-status (modello attivo?)
 	@curl -s http://localhost:8090/api/model-status; echo
 
-admin:  ## URL del pannello educatore (sessions, finestra/filtro IP)
+admin:  ## URL del pannello educatore (sessions, finestra/filtro IP, allowlist codice)
 	@echo "Pannello educatore:  http://localhost:8090/admin"
+	@echo "Laboratorio codice:  http://localhost:8090/code.html (postazioni abilitate da /admin)"
 	@echo "Sessions (JSON):     curl -s localhost:8090/api/sessions"
 
 open:  ## URL della pagina laboratorio

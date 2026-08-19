@@ -1,0 +1,936 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Laboratorio codice — Laboratorio di Prompting</title>
+<style>
+  /* --- Pagina leggera per browser kiosk (mini PC del campo) ---------------- *
+   * Zero CDN, zero richieste esterne, font di sistema. Un solo file, come    *
+   * l'artefatto che genera: la quinta tappa è diventata un laboratorio       *
+   * autonomo (change laboratorio-code), aperto dalle postazioni che          *
+   * l'educatore abilita via allowlist IP dal pannello /admin.                */
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-2: #1f232c;
+    --ink: #e8eaed;
+    --dim: #9aa0aa;
+    --accent: #6ea8fe;
+    --accent-2: #7ee2a8;
+    --warn: #ffce6b;
+    --bad: #ffb4b4;
+    --line: #2a2f3a;
+    --radius: 12px;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 18px/1.55 -apple-system, "Segoe UI", Roboto, "DejaVu Sans", Helvetica, Arial, sans-serif;
+    padding: 0 16px 64px;
+  }
+  header { max-width: 860px; margin: 0 auto; padding: 24px 0 8px; }
+  header h1 { font-size: 1.9rem; margin: 0 0 4px; letter-spacing: -0.01em; }
+  header .sub { color: var(--dim); font-size: .98rem; }
+  main { max-width: 860px; margin: 0 auto; }
+
+  h2 { font-size: 1.25rem; margin: 4px 0 8px; color: var(--accent); }
+  p { margin: 8px 0; }
+  .obiettivo { padding: 12px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); margin: 10px 0; }
+  .obiettivo b { color: var(--accent-2); }
+  code { background: var(--panel-2); padding: 1px 6px; border-radius: 6px; font-size: .9em; }
+  .hint { color: var(--dim); font-size: .94rem; background: var(--panel-2); border-left: 3px solid var(--accent); padding: 8px 12px; border-radius: 6px; margin: 10px 0; }
+
+  /* --- Gate postazione (2.5): la policy è del gateway, la pagina mostra --- */
+  #code-gate {
+    padding: 18px 16px; border: 1px dashed var(--warn); border-radius: var(--radius);
+    background: var(--panel); margin: 12px 0; font-size: 1.02rem;
+  }
+  #code-gate b { color: var(--warn); }
+
+  /* --- Form comuni ----------------------------------------------------- */
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+  button {
+    font: inherit; font-weight: 600; cursor: pointer; background: var(--accent); color: #0f1115;
+    border: 0; border-radius: 8px; padding: 9px 16px;
+  }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button.ghost { background: var(--panel-2); color: var(--ink); border: 1px solid var(--line); }
+
+  /* --- Toolbox chat ---------------------------------------------------- */
+  .chat-toolbox { border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); padding: 12px; margin-top: 10px; }
+  .chat-toolbox.disabled { opacity: .5; pointer-events: none; }
+  .chat-log { max-height: 300px; overflow-y: auto; padding: 4px 2px; margin-bottom: 8px; }
+  .chat-msg { padding: 7px 11px; border-radius: 10px; margin: 5px 0; max-width: 88%; white-space: pre-wrap; word-wrap: break-word; }
+  .chat-msg.me { background: var(--accent); color: #0f1115; margin-left: auto; text-align: left; }
+  .chat-msg.ia { background: var(--panel-2); border: 1px solid var(--line); }
+  .chat-msg.err { background: #2a1a1a; border: 1px solid #5a2a2a; color: var(--bad); }
+  .chat-msg.note { color: var(--dim); font-size: .85rem; padding: 1px 11px; }
+  .chat-spinner { color: var(--dim); padding: 4px 2px; }
+  .chat-spinner::after { content: " …"; }
+  .chat-spinner.wait { color: var(--warn); }
+  .ic { width: 1em; height: 1em; vertical-align: -.13em; }
+  .chat-input { display: flex; gap: 8px; align-items: flex-end; }
+  textarea {
+    width: 100%; background: var(--panel-2); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 8px; padding: 9px; font: inherit; resize: vertical; min-height: 110px;
+  }
+  textarea:focus { outline: 2px solid var(--accent); }
+  .chat-input button { flex-shrink: 0; }
+  .chat-limits { color: var(--dim); font-size: .8rem; margin-top: 6px; }
+
+  /* --- Contatore contesto (finestra del servizio che risponde) ----------- */
+  .ctx-meter { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .ctx-bar { flex: 1; height: 8px; background: var(--panel-2); border-radius: 6px; overflow: hidden; }
+  .ctx-fill { height: 100%; width: 0%; background: var(--accent-2); transition: width .3s; }
+  .ctx-fill.warn { background: var(--warn); }
+  .ctx-fill.full { background: var(--bad); }
+  .ctx-label { color: var(--dim); font-size: .88rem; white-space: nowrap; }
+  .ctx-label b { color: var(--ink); }
+  .ctx-reset { font-size: .8rem; padding: 4px 10px; }
+
+  /* --- Selettore modello (traslocato dalla ⑤ di index) ------------------- */
+  .model-pick { align-items: center; gap: 10px; flex-wrap: wrap; }
+  .model-pick label { color: var(--dim); font-size: .94rem; }
+  .model-pick select {
+    background: var(--panel); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 8px; padding: 5px 8px; font-size: .92rem; font-family: inherit;
+  }
+  .model-pick select:disabled { opacity: .55; }
+  .model-budget { color: var(--dim); font-size: .85rem; }
+  #remote-note { color: var(--warn); font-size: .85rem; margin: 4px 0 0; }
+  .skill-badge.remote { border-color: var(--warn); color: var(--warn); }
+  .skill-badge {
+    display: inline-block; margin-left: 8px; padding: 0 8px; white-space: nowrap;
+    border: 1px solid var(--accent-2); border-radius: 999px; color: var(--accent-2); font-size: .74rem;
+  }
+
+  /* --- Barra artefatto (2.3): copia / scarica / apri ---------------------- */
+  #artifact-bar { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
+  #artifact-bar .lab { color: var(--dim); font-size: .84rem; margin-right: 8px; }
+  #artifact-bar button { padding: 6px 12px; font-size: .92rem; }
+  #html-preview { width: 100%; min-height: 320px; background: #fff; border: 1px solid var(--line); border-radius: 8px; margin-top: 8px; }
+
+  /* --- Stato in fondo (banner modello + consumi), come la pagina madre ---- */
+  .bottom-status { margin-top: 18px; }
+  #model-banner {
+    padding: 10px 14px; border-radius: 10px; margin-bottom: 14px; font-size: .95rem;
+    border: 1px solid var(--line); background: var(--panel);
+  }
+  #model-banner.ok { border-color: var(--accent-2); color: var(--accent-2); }
+  #model-banner.warn { border-color: var(--warn); color: var(--warn); }
+  #model-banner.check { color: var(--dim); }
+  #consumi { margin-top: 6px; font-size: .86rem; color: var(--dim);
+    border: 1px dashed var(--line); border-radius: 8px; padding: 6px 10px; }
+  #consumi table { border-collapse: collapse; width: 100%; }
+  #consumi th, #consumi td { padding: 3px 8px; text-align: left; }
+  #consumi th { color: var(--dim); font-weight: 600; font-size: .8rem; }
+  #consumi td { border-top: 1px solid var(--line); }
+  #consumi th.loc, #consumi td.loc { color: var(--accent); }
+  #consumi th.front, #consumi td.front { color: var(--warn); }
+
+  /* --- Popup della trace LLM (come la pagina madre) ----------------------- */
+  .trace-btn { background: none; border: 1px solid var(--line); color: var(--dim);
+    border-radius: 6px; font: 0.72rem ui-monospace,Menlo,Consolas,monospace;
+    padding: 0 5px; margin-left: 8px; cursor: pointer; vertical-align: middle; }
+  .trace-btn:hover { color: var(--accent); border-color: var(--accent); }
+  .chat-ms { margin-left: 6px; color: var(--dim); font-size: .78rem; }
+  .tracemod { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: flex;
+    align-items: center; justify-content: center; z-index: 60; }
+  .tracemod .box { background: #171a21; color: #e8eaed; border: 1px solid #2a2f3a;
+    border-radius: 12px; max-width: min(92vw, 860px); max-height: 84vh; overflow: auto;
+    padding: 14px 16px; }
+  .tracemod .box h3 { margin: 0 0 6px; font-size: .95rem; }
+  .tracemod pre { white-space: pre-wrap; word-break: break-word; margin: 2px 0 12px;
+    font: 0.78rem/1.45 ui-monospace,Menlo,Consolas,monospace; }
+  .tracemod .x { float: right; background: none; border: 0; color: #9aa0aa;
+    font-size: 1.1rem; cursor: pointer; }
+
+  footer { max-width: 860px; margin: 28px auto 0; color: var(--dim); font-size: .85rem; border-top: 1px solid var(--line); padding-top: 14px; }
+</style>
+</head>
+<body>
+<!-- Sprite delle icone (niente emoji: il font del kiosk non le copre, si
+     vedrebbero come buchi). Stessa vernice del testo: currentColor. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="i-clock" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.6V8l2.3 1.5"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.1 15 13.9H1Z"/><path d="M8 6.2v3.3"/><path d="M8 11.8v.2"/></symbol>
+  <symbol id="i-chip" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="8" height="8" rx="1"/><path d="M6 4V2.2M8 4V2.2M10 4V2.2M6 12v1.8M8 12v1.8M10 12v1.8M4 6H2.2M4 8H2.2M4 10H2.2M12 6h1.8M12 8h1.8M12 10h1.8"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.8 4.3h10.4M6.4 2.2h3.2M5.2 4.3l.6 9.5h4.4l.6-9.5M7 7.2v3.9M9 7.2v3.9"/></symbol>
+  <symbol id="i-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2.6 8.6 6.2 12l7.2-8"/></symbol>
+  <symbol id="i-code" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5.6 4.6 2.4 8l3.2 3.4M10.4 4.6 13.6 8l-3.2 3.4"/></symbol>
+  <symbol id="i-globe" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6.3"/><ellipse cx="8" cy="8" rx="2.9" ry="6.3"/><path d="M1.7 8h12.6"/></symbol>
+  <symbol id="i-pc" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1.8" y="3" width="12.4" height="8.2" rx="1"/><path d="M5.8 14h4.4M8 11.2V14"/></symbol>
+  <symbol id="i-cloud" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.4h6.1a2.9 2.9 0 0 0 .5-5.7 4.3 4.3 0 0 0-8.2-.8A3.2 3.2 0 0 0 5 12.4Z"/></symbol>
+  <symbol id="i-drop" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 1.8C5.6 5 4.2 7.2 4.2 9.4a3.8 3.8 0 0 0 7.6 0C11.8 7.2 10.4 5 8 1.8Z"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.2"/><path d="M10.5 5.5V3.8a1.3 1.3 0 0 0-1.3-1.3H3.8a1.3 1.3 0 0 0-1.3 1.3v5.4a1.3 1.3 0 0 0 1.3 1.3h1.7"/></symbol>
+  <symbol id="i-down" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.5v8"/><path d="M4.6 7.4 8 10.8l3.4-3.4"/><path d="M2.8 13.5h10.4"/></symbol>
+  <symbol id="i-ext" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 3.5H3.5v9h9v-3"/><path d="M9.5 2.5h4v4"/><path d="M13.3 2.7 7.5 8.5"/></symbol>
+</defs></svg>
+<header>
+  <h1><svg class="ic" aria-hidden="true"><use href="#i-code" xlink:href="#i-code"/></svg> Laboratorio codice</h1>
+  <div class="sub">La quinta tappa, da sola: il modello scrive una pagina web completa — HTML e CSS in un unico file — e tu te la porti via con un click.</div>
+</header>
+
+<main>
+  <div class="obiettivo">
+    <b>L'obiettivo:</b> chiedi al modello una pagina web completa e tieni il file che produce.
+    Il prompt seme è già nell'input: modificalo o scrivi il tuo, poi guarda l'anteprima e usa
+    <b>Copia</b>, <b>Scarica .html</b> o <b>Apri</b>. Il modello locale scrive piano (anche
+    diversi minuti per una pagina intera): è il prezzo di generarla qui, sul mini PC del campo.
+  </div>
+
+  <!-- Gate postazione: lo decide il gateway (allowlist IP), la pagina mostra -->
+  <div id="code-gate" role="status" aria-live="polite">Controllo della postazione…</div>
+
+  <!-- Temperatura: LA lezione di sempre, slider in mano al ragazzo -->
+  <div class="row" style="margin:6px 0 2px;align-items:center;gap:10px;flex-wrap:wrap">
+    <label for="temp" style="color:var(--dim);font-size:.94rem">Temperatura</label>
+    <input type="range" id="temp" min="0" max="1.5" step="0.1" value="0.3"
+           style="flex:1;min-width:180px;max-width:320px">
+    <span id="temp-val" style="font-family:ui-monospace,Menlo,Consolas,monospace">0.3</span>
+  </div>
+  <div style="margin:0 0 8px;color:var(--dim);font-size:.85rem">
+    0 = precisa e ripetitiva · alta = creativa — per il codice conviene bassa; guarda nel
+    popup { } quale temperatura è partita davvero
+  </div>
+
+  <!-- Endpoint reale: il selettore compare solo se il gateway lo permette
+       (token configurato + interruttore dell'educatore + circuito non scattato).
+       Traslocato dalla vecchia ⑤ della pagina del percorso. -->
+  <div class="row model-pick" id="model-pick" hidden>
+    <label for="model">Modello</label>
+    <select id="model"></select>
+    <span class="model-budget" id="model-budget"></span>
+  </div>
+  <div id="remote-note" hidden></div>
+
+  <div class="chat-toolbox" id="tbcode"></div>
+
+  <!-- Barra artefatto sull'ultima risposta: tre strade per lo stesso file -->
+  <div class="row" id="artifact-bar" hidden>
+    <span class="lab">La tua pagina:</span>
+    <button id="copy-btn" class="ghost" type="button"><svg class="ic" aria-hidden="true"><use href="#i-copy" xlink:href="#i-copy"/></svg> Copia</button>
+    <button id="download-btn" class="ghost" type="button"><svg class="ic" aria-hidden="true"><use href="#i-down" xlink:href="#i-down"/></svg> Scarica .html</button>
+    <button id="open-btn" class="ghost" type="button"><svg class="ic" aria-hidden="true"><use href="#i-ext" xlink:href="#i-ext"/></svg> Apri</button>
+  </div>
+  <div class="row" style="margin-top:10px">
+    <label style="color:var(--dim);font-size:.94rem;display:flex;align-items:center;gap:6px">
+      <input type="checkbox" id="preview-toggle"> Mostra anteprima della pagina generata
+    </label>
+  </div>
+  <iframe id="html-preview" sandbox="" hidden title="Anteprima della pagina generata"></iframe>
+
+  <!-- Stato in fondo alla pagina, come nella pagina del percorso -->
+  <div class="bottom-status">
+    <div id="model-banner" class="check" role="status" aria-live="polite">Controllo del modello…</div>
+    <!-- Consumi: col modello remoto scelto DUE tabelle (il modello a listino +
+         la sessione in locale), altrimenti il confronto di sempre -->
+    <div id="consumi" hidden></div>
+  </div>
+</main>
+
+<footer>
+  Bit Prepared · pagina offline, zero richieste esterne (tranne quando si usano provider esterni)
+</footer>
+
+<script>
+"use strict";
+/* Laboratorio codice (change laboratorio-code): la ex tappa ⑤ come pagina
+ * autonoma. Tutto passa dagli endpoint /api/* del gateway con header
+ * X-Step: code — policy (tetto 4096, allowlist IP, semaforo, timeout) e
+ * normalizzazione vivono lì, qui al massimo si dichiarano. */
+
+var state = { modelActive: null, modelName: null, remote: null, code: null };
+var lastGenerator = null;   // chi ha generato l'ULTIMA risposta della
+                            // conversazione corrente (banner onesto: solo
+                            // dopo un invio, azzerato da «Nuova conversazione»)
+
+/* ============ Identità client + fetch con header/timeout/errori ============ */
+function _uuid() {
+  return "c-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
+}
+var CID;
+try { CID = localStorage.getItem("lab_cid") || _uuid(); localStorage.setItem("lab_cid", CID); }
+catch (e) { CID = "anon"; }  // localStorage non disponibile (kiosk ristretto)
+
+/* Icona dallo sprite SVG interno (le emoji non esistono nel font del kiosk). */
+function ic(name) {
+  var s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  s.setAttribute("class", "ic");
+  s.setAttribute("aria-hidden", "true");
+  var u = document.createElementNS("http://www.w3.org/2000/svg", "use");
+  u.setAttribute("href", "#i-" + name);
+  u.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", "#i-" + name);
+  s.appendChild(u);
+  return s;
+}
+
+/* fetch con header lab + AbortController (timeout) + traduzione errori di rete. */
+function labFetch(url, opts, step, timeoutMs) {
+  opts = opts || {};
+  opts.headers = Object.assign({ "Content-Type": "application/json", "X-Client-Id": CID }, opts.headers || {});
+  if (step) opts.headers["X-Step"] = String(step);
+  var timer = null;
+  if (timeoutMs && typeof AbortController !== "undefined") {
+    var ctrl = new AbortController();
+    opts.signal = ctrl.signal;
+    timer = setTimeout(function () { ctrl.abort(); }, timeoutMs);
+  }
+  return fetch(url, opts).then(function (r) {
+    return r.text().then(function (txt) {
+      var body = null;
+      try { body = txt ? JSON.parse(txt) : null; } catch (e) { body = { error: "risposta non JSON" }; }
+      return { ok: r.ok, status: r.status, body: body };
+    });
+  }).catch(function (e) {
+    var msg;
+    if (typeof navigator !== "undefined" && navigator.onLine === false)
+      msg = "Connessione persa col server — verifica la rete e riprova.";
+    else if (e && e.name === "AbortError")
+      msg = "Il modello ci sta mettendo troppo — riprova tra un attimo.";
+    else
+      msg = "Errore di rete (" + (e && e.message ? e.message : "?") + ") — riprova.";
+    var err = new Error(msg); err.network = true; throw err;
+  }).then(function (res) { if (timer) clearTimeout(timer); return res; },
+          function (err) { if (timer) clearTimeout(timer); throw err; });
+}
+
+/* ============ Popup della trace LLM (come la pagina del percorso) ============ */
+function showTrace(trace) {
+  var mod = document.createElement("div");
+  mod.className = "tracemod";
+  var box = document.createElement("div");
+  box.className = "box";
+  var x = document.createElement("button");
+  x.className = "x"; x.type = "button"; x.textContent = "✕";
+  x.onclick = function () { mod.remove(); };
+  var h = document.createElement("h3");
+  h.textContent = "Dialogo con l'endpoint del modello";
+  var r1 = document.createElement("h3"); r1.textContent = "Request (inviato)";
+  var p1 = document.createElement("pre");
+  p1.textContent = JSON.stringify(trace && trace.request, null, 2) || "—";
+  var r2 = document.createElement("h3"); r2.textContent = "Response (ricevuto)";
+  var p2 = document.createElement("pre");
+  p2.textContent = JSON.stringify(trace && trace.response, null, 2) || "—";
+  box.appendChild(x); box.appendChild(h); box.appendChild(r1); box.appendChild(p1);
+  box.appendChild(r2); box.appendChild(p2);
+  mod.appendChild(box);
+  mod.addEventListener("click", function (ev) { if (ev.target === mod) mod.remove(); });
+  document.body.appendChild(mod);
+}
+function addTiming(host, ms) {
+  // tempo di risposta del turno, visto dal ragazzo (attesa/retry inclusi)
+  var s = document.createElement("span");
+  s.className = "chat-ms";
+  s.textContent = ms < 1000 ? Math.round(ms) + " ms" : (ms / 1000).toFixed(1) + " s";
+  host.appendChild(s);
+}
+function addTraceBtn(host, trace) {
+  if (!trace) return;
+  var b = document.createElement("button");
+  b.className = "trace-btn"; b.type = "button";
+  b.title = "cosa è partito davvero: request e response verso il modello";
+  b.textContent = "{ }";
+  b.onclick = function (ev) { ev.stopPropagation(); showTrace(trace); };
+  host.appendChild(b);
+}
+
+/* ============ Toolbox chat (factory: qui una sola istanza, step code) =======
+ * La finestra di contesto è quella del servizio che RISPONDE (main 2048,
+ * coder 8192): arriva da model-status.code.ctx e il contatore la segue. */
+var CTX_LIMIT = 2048;   // finché il gateway non dice qual è il servizio attivo
+
+function makeChat(root, opts) {
+  opts = opts || {};
+  var maxOut = opts.maxOut || 4096;   // tetto dedicato della tappa code (gateway)
+  var hist = [];                 // cronologia [{role,content}] — È il context injection
+  root.innerHTML =
+    '<div class="ctx-meter">' +
+    '<div class="ctx-bar"><div class="ctx-fill"></div></div>' +
+    '<span class="ctx-label"><svg class="ic" aria-hidden="true"><use href="#i-chip" xlink:href="#i-chip"/></svg> <b class="ctx-tok">0</b> / <span class="ctx-limit">' + CTX_LIMIT + '</span> token</span>' +
+    '<button class="ghost ctx-reset" type="button"><svg class="ic" aria-hidden="true"><use href="#i-trash" xlink:href="#i-trash"/></svg> Nuova conversazione</button>' +
+    '</div>' +
+    '<div class="chat-log" role="log"></div>' +
+    '<div class="chat-input"><textarea rows="3" placeholder="' + (opts.placeholder || "Scrivi all'IA…") + '"></textarea>' +
+    '<button class="send" type="button">Invia</button></div>' +
+    '<div class="chat-limits">in locale risponde <b class="who-answers">il modello locale del campo</b> · risposta max ' + maxOut + ' token · contesto <span class="ctx-limit">' + CTX_LIMIT + '</span> token — limiti imposti dal server</div>';
+  var log = root.querySelector(".chat-log");
+  var input = root.querySelector("textarea");
+  var sendBtn = root.querySelector("button.send");
+  var fill = root.querySelector(".ctx-fill");
+  var tokEl = root.querySelector(".ctx-tok");
+  var resetBtn = root.querySelector(".ctx-reset");
+
+  function setDisabled(d) { root.classList.toggle("disabled", !!d); sendBtn.disabled = !!d; }
+  function setTokens(n) {          // token reali dal modello; null = non noto
+    if (!tokEl) return;
+    tokEl.textContent = (n == null) ? "—" : n;
+    if (n == null) return;
+    var pct = Math.min(100, Math.round((n / CTX_LIMIT) * 100));
+    fill.style.width = pct + "%";
+    fill.className = "ctx-fill" + (pct >= 90 ? " full" : pct >= 75 ? " warn" : "");
+  }
+  function paintCtxLimit() {       // chi risponde e con quale finestra: il
+    root.querySelectorAll(".ctx-limit").forEach(function (el) { el.textContent = CTX_LIMIT; });
+    var who = root.querySelector(".who-answers");
+    if (who) who.textContent = (state.code && state.code.model)
+      ? state.code.model : "il modello locale del campo";
+  }
+  function reset() {               // «Nuova conversazione»: svuota e riparte dal seme
+    hist = [];
+    log.innerHTML = "";
+    setTokens(0);
+    if (opts.seed) { input.value = opts.seed(); }
+    if (opts.onHist) opts.onHist(hist);
+    if (opts.onReset) opts.onReset();
+  }
+  function bubble(role, text, cls, icon) {
+    var d = document.createElement("div");
+    d.className = "chat-msg " + (cls || (role === "user" ? "me" : "ia"));
+    if (icon) d.appendChild(ic(icon));
+    // anti-XSS: il testo è un text node, mai innerHTML sull'output del modello
+    d.appendChild(document.createTextNode((icon ? " " : "") + text));
+    log.appendChild(d);
+    log.scrollTop = log.scrollHeight;
+    return d;
+  }
+  function note(text) {              // annotazione dim sotto una bolla
+    var d = document.createElement("div");
+    d.className = "chat-msg note";
+    d.textContent = text;
+    log.appendChild(d);
+    log.scrollTop = log.scrollHeight;
+  }
+  function send() {
+    if (state.modelActive === false) return;
+    if (state.code && !state.code.allowed) return;   // il gate è del gateway
+    var text = input.value.trim();
+    if (!text) return;
+    hist.push({ role: "user", content: text });
+    input.value = "";
+    bubble("user", text);
+    var spin = document.createElement("div");
+    spin.className = "chat-spinner";
+    // il ragazzo sa cosa e per quanto sta aspettando: una pagina intera sul
+    // modello locale richiede anche minuti — è il prezzo di farla qui
+    var remoteNow = (typeof opts.model === "function") && opts.model();
+    var spinBase = remoteNow
+      ? "elaborazione sul modello remoto — l'attesa può durare anche minuti"
+      : "elaborazione — il modello scrive la pagina intera, richiede anche minuti";
+    spin.textContent = spinBase;
+    log.appendChild(spin);
+    log.scrollTop = log.scrollHeight;
+    sendBtn.disabled = true;
+
+    var toSend = hist.slice();       // il laboratorio codice ha sempre memoria
+    var body = { messages: toSend };
+    // endpoint reale: il modello scelto viaggia nel body; assente = percorso
+    // locale di sempre — la scelta la valida il gateway
+    if (typeof opts.model === "function") { var mo = opts.model(); if (mo) body.model = mo; }
+    // temperatura dello slider (il gateway clampa comunque 0–1.5)
+    var tp = (typeof opts.temperature === "function") ? opts.temperature() : opts.temperature;
+    if (tp != null) body.temperature = tp;
+    var t0 = Date.now();
+    var waiting429 = false;
+    var ovTick = null;               // countdown del 429, vivo solo nell'attesa
+    var spinTick = setInterval(function () {   // onestà dell'attesa: secondi che passano
+      if (waiting429) return;
+      spin.textContent = spinBase + " · " + Math.round((Date.now() - t0) / 1000) + " s";
+    }, 1000);
+    function wait429(ra, msg) {      // UN solo avviso, nello spinner, con i
+      var left = ra;                 // secondi che scendono davvero
+      spin.textContent = "";
+      spin.className = "chat-spinner wait";
+      spin.appendChild(ic("clock"));
+      var txt = document.createElement("span");
+      spin.appendChild(txt);
+      function paint() { txt.textContent = " " + msg + left + " s"; }
+      paint();
+      if (ovTick) clearInterval(ovTick);
+      ovTick = setInterval(function () { if (left > 1) { left--; paint(); } }, 1000);
+    }
+    function spinStop() {            // chiusura spinner: countdown, tick, nodo
+      if (ovTick) { clearInterval(ovTick); ovTick = null; }
+      if (spinTick) { clearInterval(spinTick); spinTick = null; }
+      spin.remove();
+    }
+    function doPost() {
+      // timeout client (930 s) > gateway code (900 s) > mai la pagina HTML di
+      // nginx (960 s): così arriva sempre il JSON del gateway, anche il 504
+      labFetch("/api/chat", { method: "POST", body: JSON.stringify(body) }, opts.step, 930000)
+      .then(function (res) {
+      var j = res.body || {};
+      // semaforo del laboratorio (una generazione alla volta) e backpressure:
+      // finché il gateway risponde 429 il turno resta aperto — countdown al
+      // ragazzo e nuovo tentativo dopo retry_after. Mai una tantum.
+      if (res.status === 429 && (j.overload || j.busy)) {
+        var ra = j.retry_after || 10;
+        waiting429 = true;
+        wait429(ra, j.busy
+          ? "una generazione alla volta: il laboratorio è occupato, riprovo tra "
+          : "laboratorio sovraccarico, riprovo tra ");
+        setTimeout(function () {
+          waiting429 = false;
+          if (ovTick) { clearInterval(ovTick); ovTick = null; }
+          spin.className = "chat-spinner";
+          spin.textContent = spinBase;
+          doPost();
+        }, ra * 1000);
+        return;
+      }
+      spinStop();
+      var elapsedMs = Date.now() - t0;
+      // postazione non abilitata (l'educatore può cambiare la lista a runtime,
+      // anche a pagina aperta): messaggio chiaro, niente retry automatici
+      if (j.code_forbidden) {
+        bubble(null, "il laboratorio codice non è attivo per questa postazione — avvisa l'educatore", "err", "warn");
+        renderGate();
+        return;
+      }
+      // endpoint reale spento/scattato (≠ overload locale): niente countdown
+      // né retry — serve l'educatore. E l'errore remoto NON tocca modelActive:
+      // la chat locale resta attiva (isolamento, change endpoint-remoto)
+      if (j.remote_disabled) {
+        var rdb = bubble(null, j.error || "endpoint reale disattivato — avvisa l'educatore", "err", "warn");
+        addTraceBtn(rdb, j.trace);
+        refreshRemote();   // il selettore si blocca subito col motivo
+        return;
+      }
+      if (j.remote_error) {
+        var reb = bubble(null, j.error || "errore dell'endpoint reale", "err", "warn");
+        addTraceBtn(reb, j.trace);
+        return;
+      }
+      if (j.model_active === false) { bubble(null, j.error || "modello non attivo", "err", "warn"); setDisabled(true); state.modelActive = false; renderBanner(); return; }
+      if (!res.ok || j.error) {
+        var errTxt = String(j.error || ("errore " + res.status));
+        // finestra di contesto esaurita → la lezione, non un errore grezzo
+        var eb;
+        if (/context|contesto/i.test(errTxt)) {
+          eb = bubble(null, "Contesto pieno — l'IA non ha più memoria. Premi «Nuova conversazione».", "err", "chip");
+        } else {
+          eb = bubble(null, errTxt, "err", "warn");
+        }
+        addTraceBtn(eb, j.trace);  // anche l'errore è dialogo col servizio
+        sendBtn.disabled = false; return;
+      }
+      hist.push({ role: "assistant", content: j.reply });
+      var ia = bubble("assistant", j.reply);
+      addTiming(ia, elapsedMs);    // accanto a { }: quanto ha aspettato il ragazzo
+      addTraceBtn(ia, j.trace);    // { }: request/response di QUESTO turno
+      // nuvola: la risposta arriva dal modello remoto scelto
+      if (opts.badge) {
+        var btxt = opts.badge();
+        if (btxt) {
+          var b = document.createElement("span");
+          b.className = "skill-badge remote";
+          b.appendChild(ic(opts.badgeIcon || "cloud"));
+          b.appendChild(document.createTextNode(" " + btxt));
+          ia.appendChild(b);
+        }
+      }
+      // risposta troncata? verdetto dal modello (finish_reason) o, in assenza,
+      // token generati esattamente al tetto — stesso criterio del limite dichiarato
+      if (j.finish_reason === "length" ||
+          (j.usage && j.usage.completion_tokens >= maxOut)) {
+        note("risposta tagliata dal limite di " + maxOut + " token — la pagina esce incompleta: ritenta con «Nuova conversazione»");
+      }
+      setTokens(j.usage ? j.usage.prompt_tokens : null);
+      loadConsumi();  // il costo della sessione cresce con ogni risposta
+      if (j.remote) refreshRemote();  // budget richieste aggiornato al volo
+      if (opts.onHist) opts.onHist(hist);
+      // la risposta è arrivata: l'artefatto (barra copia/scarica/apri e
+      // anteprima) si attiva QUI — senza questa chiamata la pagina risponde
+      // ma i pulsanti restano morti (regressione trovata al primo campo).
+      // Al callback passa anche la risposta intera: dice CHI ha generato.
+      if (opts.onReply) opts.onReply(j.reply, j);
+      }).catch(function (err) {
+        spinStop();
+        bubble(null, err && err.message ? err.message : "errore di rete", "err", "warn");
+      }).finally(function () {
+        // durante l'attesa da 429 il pulsante resta spento: il turno è in corso
+        if (!waiting429 && state.modelActive !== false) sendBtn.disabled = false;
+      });
+    }
+    doPost();
+  }
+  sendBtn.addEventListener("click", send);
+  input.addEventListener("keydown", function (e) {
+    if (e.ctrlKey && (e.key === "Enter" || e.keyCode === 13)) { e.preventDefault(); send(); }
+  });
+  if (resetBtn) resetBtn.addEventListener("click", reset);
+  var api = { setDisabled: setDisabled, reset: reset, root: root, paintCtxLimit: paintCtxLimit };
+  if (opts.seed) { input.value = opts.seed(); }
+  return api;
+}
+
+/* ============ Prompt seme: pagina intera, file unico, sola risposta-codice == */
+var SEED = "Sei il coder della Squadriglia Iene. Scrivi il codice di una pagina HTML completa: la schermata di inizio del videogioco «Space Shooter». Il <body> ha uno scheletro fisso da rispettare TUTTO e nell'ordine, sezione per sezione. Primo: un <header> con la scritta «BitPrepared». Secondo: un <h1> «Space Shooter» seguito da un <p> col testo «Benvenuto pilota! Il tuo obiettivo è sopravvivere nello spazio distruggendo gli asteroidi. Usa le frecce per muovere l'astronave e il pulsante a destra per sparare. Buona fortuna!». Terzo: un <a> grande e arancione col testo «Gioca» e con href che punta a SpaceShooter/index.html. Quarto: una <section> con dentro un <h2> «I nostri esploratori spaziali», un <p> «Direttamente dalla Squadriglia Iene» e poi SEI <div> affiancati in flexbox, uno per persona — Alessandro T. capo squadriglia e grafica, Samuele programmazione, Angelo programmazione, Pietro multimedia, Alessandro E. multimedia, Luca vice squadriglia e multimedia; dentro ogni <div>: un <div> rotondo e colorato con dentro le iniziali del nome (border-radius al 50%, SENZA <img>), il nome in grassetto e il ruolo in piccolo. Quinto: un <footer> con «Copyright © 2023 Campo Competenza Bit Prepared — Esploratori nella Rete». Stile: sfondo della pagina bianco, layout centrato, testi grigi, pulsante arancione, header e footer scuri; niente sfondo verde, niente emoji. La pagina deve essere un UNICO file autonomo: tutto il CSS in un blocco <style> dentro la pagina, nessun file esterno, nessun collegamento a internet, niente <img> e nessuna immagine. Rispondi con SOLO il codice, nessuna spiegazione.";
+
+var $temp = document.getElementById("temp");
+var $tempval = document.getElementById("temp-val");
+function tempValue() { return parseFloat($temp.value); }
+$temp.addEventListener("input", function () { $tempval.textContent = $temp.value; });
+
+var chatCode = makeChat(document.getElementById("tbcode"), {
+  placeholder: "Modifica il prompt seme o scrivi il tuo…",
+  step: "code", meter: true,
+  seed: function () { return SEED; },
+  temperature: tempValue,
+  maxOut: 4096,   // tetto dedicato della tappa code (policy del gateway)
+  model: function () { return modelPick.current; },
+  badge: function () { return modelPick.current ? shortModelName(modelPick.current) : null; },
+  badgeIcon: "cloud",
+  onReply: function (reply, j) {
+    artifactArrived(stripFences(reply));
+    // chi ha generato DAVVERO questa risposta: lo dice il gateway (j.remote
+    // + j.model per l'endpoint reale; in locale, chi risponde in questa
+    // tappa — coder dedicato, o principale col fallback dichiarato)
+    var nome;
+    if (j && j.remote) {
+      nome = ((state.remote && state.remote.provider)
+        ? state.remote.provider + " · " : "") + shortModelName(j.model || modelPick.current);
+    } else {
+      nome = (state.code && state.code.model) || state.modelName ||
+             "il modello locale del campo";
+      if (state.code && !state.code.active) nome += " · coder dedicato non attivo";
+    }
+    lastGenerator = nome;
+    renderBanner();
+  },
+  onReset: function () {
+    // «Nuova conversazione» (o cambio modello, che azzera): nessuna
+    // generazione alle spalle, il banner non nomina più nessuno
+    lastGenerator = null;
+    renderBanner();
+  }
+});
+
+/* ============ Selettore modello (traslocato dalla ⑤ della pagina madre) =====
+ * Il selettore compare solo quando il gateway lo dice; l'opzione locale
+ * dichiara CHI risponde davvero in questa tappa (blocco code di model-status).
+ * Cambiare modello azzera la conversazione (il seme resta nell'input). */
+var modelPick = { current: "" };   // "" = modello locale del campo
+
+function shortModelName(m) {
+  return String(m).split("/").pop().replace(/-(FP8|NVFP4)$/, "");
+}
+function setModel(v) {
+  if (v === modelPick.current) return;
+  modelPick.current = v;
+  chatCode.reset();  // confronto pulito tra modelli, seme conservato
+  loadConsumi();     // il riquadro consumi cambia forma
+}
+function renderModelPick() {
+  var host = document.getElementById("model-pick");
+  var sel = document.getElementById("model");
+  var bud = document.getElementById("model-budget");
+  var rnote = document.getElementById("remote-note");
+  var r = state.remote;
+  if (!r || !r.available || !r.enabled) {
+    host.hidden = true; rnote.hidden = true;
+    setModel("");   // educatore OFF (o token assente): si torna al locale
+    return;
+  }
+  host.hidden = false;
+  if (r.tripped) {
+    sel.disabled = true;
+    bud.textContent = "";
+    rnote.hidden = false;
+    rnote.textContent = "Endpoint reale disattivato: " + (r.reason || "limite superato") +
+                       " — avvisa l'educatore, può sbloccarlo dal pannello admin.";
+    setModel("");   // circuito scattato: niente cloud finché non si sblocca
+    return;
+  }
+  sel.disabled = false;
+  rnote.hidden = true;
+  // opzioni: modello locale + allowlist arrivata dal gateway (mai hardcodata)
+  var want = [""].concat(r.models || []);
+  var same = sel.options.length === want.length;
+  for (var i = 0; same && i < want.length; i++) {
+    if (sel.options[i].value !== want[i]) same = false;
+  }
+  if (!same) {
+    sel.innerHTML = "";
+    want.forEach(function (m) {
+      var o = document.createElement("option");
+      o.value = m;
+      // come si dice «Modello locale», il remoto dichiara il PROVIDER; e
+      // l'opzione locale dice CHI risponde davvero in questa tappa (code.model)
+      o.textContent = m ? (r.provider ? r.provider + " · " : "") + shortModelName(m)
+                        : "Modello locale" + ((state.code && state.code.model)
+                          ? " (" + state.code.model + ")" : "");
+      sel.appendChild(o);
+    });
+  }
+  sel.value = (want.indexOf(modelPick.current) !== -1) ? modelPick.current : "";
+  setModel(sel.value);   // modello sparito dall'allowlist → si torna al locale
+  // il budget è del PROVIDER remoto (i SUOI limiti d'uso): dichiarato nel
+  // testo, e visibile solo con un modello remoto selezionato
+  var w = r.window;
+  bud.textContent = "";
+  if (w && modelPick.current) bud.textContent =
+    Math.max(0, w.req_limit - w.req) + "/" + w.req_limit +
+    " richieste disponibili su " + (r.provider || "endpoint remoto") + " nei 60 s";
+}
+function refreshRemote() {
+  labFetch("/api/model-status", { method: "GET" }, null, 4000).then(function (res) {
+    if (res.body && res.body.remote) { state.remote = res.body.remote; renderModelPick(); }
+  }).catch(function () {});
+}
+document.getElementById("model").addEventListener("change", function () {
+  setModel(this.value || "");
+});
+
+/* ============ Gate postazione (2.5): la policy è del gateway ================
+ * model-status.code.allowed è l'esito per CHI chiede (la lista IP non arriva
+ * mai qui). Postazione non abilitata → messaggio amichevole al posto della
+ * chat e toolbox spento. */
+function renderGate() {
+  var gate = document.getElementById("code-gate");
+  if (state.code === null) {
+    gate.hidden = false;
+    gate.textContent = "Controllo della postazione…";
+    chatCode.setDisabled(true);
+    return;
+  }
+  if (state.code.allowed) {
+    gate.hidden = true;
+    chatCode.setDisabled(state.modelActive === false);
+    return;
+  }
+  gate.hidden = false;
+  gate.innerHTML = "";
+  var b = document.createElement("b");
+  b.appendChild(ic("warn"));
+  b.appendChild(document.createTextNode(" Questo laboratorio non è attivo per la tua postazione."));
+  gate.appendChild(b);
+  var p = document.createElement("div");
+  p.style.marginTop = "6px";
+  p.textContent = "Lo accende l'educatore dal pannello di controllo, scegliendo " +
+                  "gli indirizzi delle postazioni che possono usarlo: chiediglielo, " +
+                  "poi ricarica la pagina.";
+  gate.appendChild(p);
+  chatCode.setDisabled(true);
+}
+
+/* ============ Banner stato modello + poll ============
+ * Qui il banner non è lo stato del laboratorio (quello sta in index e nel
+ * pannello): dice chi ha generato l'ULTIMA risposta della conversazione
+ * corrente — il gateway lo conferma a ogni reply (remoto o locale). Prima
+ * del primo invio resta neutro; «Nuova conversazione» (o il cambio modello,
+ * che azzera) lo riporta neutro. Il conteggio dei ragazzi collegati non
+ * c'entra: resta alla pagina del percorso e al pannello dell'educatore. */
+function renderBanner() {
+  var b = document.getElementById("model-banner");
+  if (state.modelActive === null) { b.className = "check"; b.textContent = "Controllo del modello…"; return; }
+  if (!state.modelActive) {
+    b.className = "warn";
+    b.textContent = "Modello NON attivo";
+    return;
+  }
+  b.className = "ok";
+  b.textContent = "";
+  b.appendChild(ic("check"));
+  if (lastGenerator) {
+    b.appendChild(document.createTextNode(" Genera " + lastGenerator));
+    return;
+  }
+  b.appendChild(document.createTextNode(" Modello pronto — invia per generare"));
+}
+function checkModel() {
+  labFetch("/api/model-status", { method: "GET" }, null, 4000).then(function (res) {
+    state.modelActive = !!res.body.model_active;
+    state.modelName = res.body.model || null;
+    state.remote = res.body.remote || null;
+    // la tappa code: esito del gate per questa postazione + chi risponde
+    state.code = res.body.code || null;
+    if (state.code && state.code.ctx) CTX_LIMIT = state.code.ctx;  // 2048/8192
+    chatCode.paintCtxLimit();  // chi risponde e finestra, anche nel fallback
+    renderBanner();
+    renderGate();
+    renderModelPick();
+    setTimeout(checkModel, 15000);  // aggiorna n. utenti e gate al volo
+  }).catch(function () {
+    // server giù (educatore che riavvia lo stack): banner onesto e chat spente…
+    state.modelActive = false;
+    renderBanner();
+    renderGate();
+    // …ma il poll NON muore: si riprogramma anche sull'errore, più fitto —
+    // alla riaccensione la pagina si riprende DA SOLA, senza che nessuno
+    // ricarichi (regressione: restava «Modello NON attivo» a vita)
+    setTimeout(checkModel, 5000);
+  });
+}
+
+/* ============ Artefatto: copia / scarica / apri + anteprima (2.3) =========== */
+var lastArtifact = "";
+
+function stripFences(s) {
+  var t = String(s || "").trim();
+  // il blocco fenced può stare ovunque (spesso dopo una frase di intro del
+  // modello): si estrae il PRIMO blocco ```...``` completo, se c'è
+  var m = t.match(/```[a-zA-Z]*\r?\n([\s\S]*?)```/);
+  if (m) return m[1].trim();
+  t = t.replace(/^```[a-zA-Z]*\n?/, "").replace(/```$/, "").trim();
+  return t;
+}
+function artifactArrived(html) {
+  lastArtifact = html;
+  document.getElementById("artifact-bar").hidden = !html;
+  maybeRenderPreview();
+}
+function btnFeedback(btn, txt) {
+  // feedback visibile dell'avvenuta azione (icona+testo, mai emoji)
+  var old = btn.innerHTML;
+  btn.innerHTML = "";
+  btn.appendChild(ic("check"));
+  btn.appendChild(document.createTextNode(" " + txt));
+  setTimeout(function () { btn.innerHTML = old; }, 1600);
+}
+function copyArtifact() {
+  if (!lastArtifact) return;
+  // LAN HTTP non è secure context: navigator.clipboard non esiste. Fallback
+  // classico: textarea temporanea fuori schermo + selezione + execCommand.
+  var btn = document.getElementById("copy-btn");
+  var ta = document.createElement("textarea");
+  ta.value = lastArtifact;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  var ok = false;
+  try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+  document.body.removeChild(ta);
+  if (ok) {
+    btnFeedback(btn, "Copiato");
+  } else {
+    // ultima spiaggia onesta: il codice resta selezionato nell'ultima risposta
+    btnFeedback(btn, "Seleziona e copia a mano");
+  }
+}
+function downloadArtifact() {
+  if (!lastArtifact) return;
+  var blob = new Blob([lastArtifact], { type: "text/html" });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement("a");
+  a.href = url;
+  a.download = "pagina-laboratorio.html";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(function () { URL.revokeObjectURL(url); }, 3000);
+  btnFeedback(document.getElementById("download-btn"), "Scaricato");
+}
+function openArtifact() {
+  if (!lastArtifact) return;
+  // Blob URL in nuova scheda: se il kiosk blocca i popup, degrada senza errori
+  // — restano Copia e Scarica
+  try {
+    var blob = new Blob([lastArtifact], { type: "text/html" });
+    var w = window.open(URL.createObjectURL(blob), "_blank");
+    if (!w) btnFeedback(document.getElementById("open-btn"), "Bloccato: usa Copia");
+  } catch (e) {
+    btnFeedback(document.getElementById("open-btn"), "Bloccato: usa Copia");
+  }
+}
+document.getElementById("copy-btn").addEventListener("click", copyArtifact);
+document.getElementById("download-btn").addEventListener("click", downloadArtifact);
+document.getElementById("open-btn").addEventListener("click", openArtifact);
+
+/* Anteprima grande: sandbox vuota = niente script eseguibili, niente
+ * same-origin col laboratorio. Il file generato è HTML+CSS, gira innocuo. */
+var frame = document.getElementById("html-preview");
+var previewToggle = document.getElementById("preview-toggle");
+function maybeRenderPreview() {
+  if (previewToggle.checked && lastArtifact) {
+    frame.hidden = false;
+    frame.srcdoc = lastArtifact;
+  }
+}
+previewToggle.addEventListener("change", function () {
+  if (previewToggle.checked) {
+    if (lastArtifact) { frame.hidden = false; frame.srcdoc = lastArtifact; }
+  } else { frame.hidden = true; }
+});
+
+/* ============ Costo della sessione (come la pagina madre; col modello ======
+ * remoto scelto DUE tabelle: il modello a listino standard e la sessione in
+ * locale. Costanti didattiche in backend/costi.py.) */
+function loadConsumi() {
+  fetch("/api/consumi/" + encodeURIComponent(CID))
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      var b = document.getElementById("consumi");
+      if (!d || !d.has_tokens) { b.hidden = true; return; }
+      b.hidden = false;
+      if (modelPick.current) { renderConsumiRemoto(b, d); return; }
+      b.innerHTML =
+        "<b><svg class='ic' aria-hidden='true'><use href='#i-globe' xlink:href='#i-globe'/></svg> Costo della tua sessione</b> <span>(" +
+        d.tok_out + " token generati, " + Math.round(d.secondi) + " s" +
+        (d.remoto && d.remoto.length ? " — solo chat locali" : "") + ")</span>" +
+        comparisonTableHtml(d);
+    }).catch(function () { document.getElementById("consumi").hidden = true; });
+}
+/* Il confronto locale-vs-frontiera (righe: energia, acqua, costo; calcolato
+ * sulle SOLE interazioni locali). Condivisa dal riquadro standard e dalla
+ * seconda tabella col modello remoto. */
+function comparisonTableHtml(d) {
+  return "<table>" +
+    "<tr><th></th><th class='loc'><svg class='ic' aria-hidden='true'><use href='#i-pc' xlink:href='#i-pc'/></svg> Qui, sul mini PC</th>" +
+    "<th class='front'><svg class='ic' aria-hidden='true'><use href='#i-cloud' xlink:href='#i-cloud'/></svg> Su " + testoSicuro(d.frontiera.modello) + "</th></tr>" +
+    // numeri a decimali FISSI: il float grezzo per consumi piccoli arriva
+    // in notazione scientifica (9.7e-06) — illeggibile per un ragazzo
+    "<tr><th>Energia</th><td class='loc'>" + d.locale.kwh.toFixed(4) + " kWh</td>" +
+    "<td class='front'>" + d.frontiera.kwh.toFixed(4) + " kWh</td></tr>" +
+    "<tr><th>Acqua</th><td class='loc'>≈ 0 L (calcola nel locale)</td>" +
+    "<td class='front'><svg class='ic' aria-hidden='true'><use href='#i-drop' xlink:href='#i-drop'/></svg> " + d.frontiera.acqua_l.toFixed(6) + " L</td></tr>" +
+    "<tr><th>Costo</th><td class='loc'>€ " + d.locale.euro.toFixed(4) + " (luce)</td>" +
+    "<td class='front'>€ " + d.frontiera.euro.toFixed(4) + " (API)</td></tr>" +
+    "</table>";
+}
+/* Modello remoto scelto: DUE tabelle. La prima è il modello scelto poco
+ * prima — i token sono REALI (usage dell'endpoint) e il costo è a listino
+ * standard, mai il prezzo dell'offerta sperimentale. La seconda è la
+ * sessione in locale: il confronto di sempre. */
+function renderConsumiRemoto(b, d) {
+  var rem = d.remoto || [];
+  var mine = rem.filter(function (r) { return r.modello === modelPick.current; });
+  var html =
+    "<b><svg class='ic' aria-hidden='true'><use href='#i-cloud' xlink:href='#i-cloud'/></svg> Il modello scelto: " +
+    testoSicuro(shortModelName(modelPick.current)) + "</b>";
+  if (mine.length) {
+    var totIn = 0, totOut = 0, totEur = 0;
+    mine.forEach(function (r) {
+      totIn += r.tok_in || 0; totOut += r.tok_out || 0; totEur += r.euro || 0;
+    });
+    html += " <span>(" + totIn + " token in, " + totOut + " generati)</span>" +
+      "<table>" +
+      "<tr><th>Token</th><td class='front'>" + totIn + " in · " + totOut + " out</td></tr>" +
+      "<tr><th>Costo API</th><td class='front'>€ " + totEur.toFixed(4) +
+      " a listino standard</td></tr></table>";
+  } else {
+    html += " <span>— nessuna risposta ancora da questo modello</span>";
+  }
+  html +=
+    "<b><svg class='ic' aria-hidden='true'><use href='#i-pc' xlink:href='#i-pc'/></svg> La tua sessione in locale</b> <span>(" +
+    d.tok_out + " token generati, " + Math.round(d.secondi) + " s — solo chat locali)</span>" +
+    comparisonTableHtml(d);
+  b.innerHTML = html;
+}
+/* testoSicuro DEVE leggere innerHTML: textContent ritorna la stringa grezza
+ * (stesso bug dell'esc() del pannello admin, trovato al campo con le card HTML). */
+function testoSicuro(s) { var d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+
+/* ============ Init ============ */
+renderGate();
+checkModel();
+setInterval(loadConsumi, 5000);  // si muove anche senza risposte di chat
+</script>
+</body>
+</html>

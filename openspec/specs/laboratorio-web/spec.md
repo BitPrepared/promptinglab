@@ -6,7 +6,7 @@ Pagina web e server offline che fanno vivere ai ragazzi, sui loro Raspberry Pi, 
 
 ### Requirement: Pagina laboratorio con percorso guidato
 
-La pagina web SHALL presentare il percorso di prompting del Flusso §3.4 articolato in cinque tappe — Context Injection, System Prompt, Skills, Workflow, Prompt Engineering — accompagnato dalla teoria (Oracolo/allucinazioni, "l'IA ti vuole lì", responsabilità del validatore) e da esempi. Il contenuto didattico SHALL essere fruibile anche senza interagire col modello.
+La pagina web SHALL presentare il percorso di prompting del Flusso §3.4 articolato in quattro tappe — Context Injection, System Prompt, Skills, Workflow — accompagnato dalla teoria (Oracolo/allucinazioni, "l'IA ti vuole lì", responsabilità del validatore) e da esempi. Il contenuto didattico SHALL essere fruibile anche senza interagire col modello. La quinta tappa (Prompt Engineering) NON vive in questa pagina: è il laboratorio codice, su pagina dedicata con propria capability, raggiungibile solo dalle postazioni abilitate dall'educatore; il percorso della pagina laboratorio MUST NOT mostrarne link o riferimenti (scelta dichiarata: l'accesso lo dà l'educatore, che apre la pagina dedicata dal pannello).
 
 #### Scenario: Ragazzo segue una tappa
 
@@ -15,8 +15,8 @@ La pagina web SHALL presentare il percorso di prompting del Flusso §3.4 articol
 
 #### Scenario: Percorso a cinque tappe
 
-- **WHEN** un ragazzo consulta la navigazione del percorso
-- **THEN** vede cinque tappe numerate in ordine: ① Context Injection, ② System Prompt, ③ Skills, ④ Workflow, ⑤ Prompt Engineering
+- **WHEN** un ragazzo consulta la navigazione del percorso sulla pagina laboratorio
+- **THEN** vede quattro tappe numerate in ordine (① Context Injection, ② System Prompt, ③ Skills, ④ Workflow) senza link né riferimenti alla quinta: la quinta tappa, Prompt Engineering, vive nel laboratorio codice su pagina dedicata
 
 ### Requirement: Interazione con la skill dalla pagina
 
@@ -154,7 +154,7 @@ La tappa "Context Injection" SHALL presentare due tab affiancabili in sequenza: 
 
 ### Requirement: Contatore token del contesto
 
-Le chat delle tappe ①, ②, ③ e ⑤ SHALL mostrare un contatore del contesto in token reali ricevuti dal modello, nel formato `uso/limite` con barra di riempimento. Il limite mostrato SHALL corrispondere alla finestra di contesto effettivamente configurata sul servizio modello. La barra SHALL segnalare visivamente l'avvicinarsi del limite.
+Le chat delle tappe ①, ②, ③ e del laboratorio codice SHALL mostrare un contatore del contesto in token reali ricevuti dal modello, nel formato `uso/limite` con barra di riempimento. Il limite mostrato SHALL corrispondere alla finestra di contesto effettivamente configurata sul servizio modello. La barra SHALL segnalare visivamente l'avvicinarsi del limite.
 
 #### Scenario: Il contatore cresce a ogni turno
 
@@ -268,12 +268,12 @@ L'esperienza «Diario di Bordo» (appunti → scaffold) SHALL essere presentata 
 
 ### Requirement: Limiti di generazione espliciti nell'interfaccia
 
-Le chat delle tappe ①, ②, ③ e ⑤ SHALL dichiarare visivamente i limiti imposti dal server: il tetto di token della risposta (256, default difensivo del gateway) accanto alla finestra di contesto (2048), con l'indicazione che sono limiti server-side non modificabili dal client. I valori mostrati MUST corrispondere a quelli effettivamente applicati dal gateway.
+Le chat delle tappe ①, ②, ③ e del laboratorio codice SHALL dichiarare visivamente i limiti imposti dal server: il tetto di token della risposta e la finestra di contesto del servizio che risponde, con l'indicazione che sono limiti server-side non modificabili dal client. Per le chat delle tappe ①–③ il tetto è quello difensivo del gateway; per il laboratorio codice il tetto è quello dedicato, più alto, dichiarato dalla sua capability. I valori mostrati MUST corrispondere a quelli effettivamente applicati dal gateway.
 
 #### Scenario: Il ragazzo vede entrambi i limiti
 
-- **WHEN** il ragazzo apre una delle chat delle tappe ①, ②, ③ o ⑤
-- **THEN** l'interfaccia mostra il limite di risposta (max 256 token) e quello di contesto (2048 token), etichettati come imposti dal server
+- **WHEN** il ragazzo apre una delle chat delle tappe ①, ② o ③
+- **THEN** l'interfaccia mostra il limite di risposta e quello di contesto, etichettati come imposti dal server
 
 #### Scenario: Risposta troncata riconoscibile
 
@@ -386,64 +386,6 @@ Per ogni dialogo con il modello — le chat delle tappe ① Context Injection, �
 - **WHEN** la chiamata al modello fallisce con una risposta d'errore
 - **THEN** la vista mostra il body d'errore ricevuto come response
 
-### Requirement: Tappa Prompt Engineering con parametri espliciti
-
-La chat della tappa ⑤ Prompt Engineering SHALL esporre un controllo di temperatura regolabile entro i limiti ammessi dal gateway (0–1.5), con valore predefinito basso orientato all'aderenza, e SHALL inviare il valore selezionato con ogni richiesta. Il gateway SHALL applicare alla tappa ⑤ un tetto token più alto (fino al soffitto complessivo) rispetto al default delle altre chat, e la pagina SHALL dichiarare nell'interfaccia il tetto effettivo. I valori applicati dopo la normalizzazione del gateway restano osservabili nella trace della chiamata.
-
-#### Scenario: Il ragazzo regola la temperatura
-
-- **WHEN** il ragazzo sposta il controllo e invia un messaggio
-- **THEN** la richiesta porta la temperatura selezionata, visibile nella trace della chiamata
-
-#### Scenario: Default di aderenza
-
-- **WHEN** la tappa si apre
-- **THEN** il controllo parte da un valore basso di aderenza, non dal default alto delle chat libere
-
-#### Scenario: Limiti rispettati dal controllo
-
-- **WHEN** il ragazzo muove il controllo
-- **THEN** non può esprimere valori fuori dall'intervallo accettato dal gateway
-
-#### Scenario: Tetto token alto per la generazione di codice
-
-- **WHEN** la chat della tappa ⑤ chiede al gateway senza specificare un tetto
-- **THEN** il gateway applica il tetto alto della tappa, dichiarato nell'interfaccia e visibile nella trace; le altre tappe mantengono il tetto basso
-
-#### Scenario: Preferenza esplicita rispettata
-
-- **WHEN** una richiesta esprime un proprio tetto token
-- **THEN** il gateway lo rispetta entro i limiti complessivi, come per le altre tappe
-
-### Requirement: Modello coder dedicato alla tappa ⑤
-
-Quando un secondo servizio modello dedicato al codice è attivo (profilo opzionale dell'orchestrazione, es. qwen2.5-coder-1.5b), il gateway SHALL instradare ad esso le chat LOCALI della tappa ⑤; le altre tappe e la skill continuano sul modello principale. Se il servizio dedicato non è attivo o irraggiungibile, la ⑤ SHALL ricadere sul modello principale senza errori visibili al ragazzo (fallback trasparente, anche a richiesta già partita se la connessione cade). L'opzione «Modello locale» del selettore della ⑤ SHALL dichiarare quale modello locale risponde davvero (il dedicato quando attivo, il principale altrimenti).
-
-#### Scenario: Instradamento della ⑤
-
-- **WHEN** la ⑤ manda una chat locale col servizio dedicato attivo
-- **THEN** la richiesta arriva al modello dedicato (coi parametri llama di sempre), e il principale non viene toccato
-
-#### Scenario: Le altre tappe non cambiano percorso
-
-- **WHEN** una chat delle tappe ①–④ arriva col servizio dedicato attivo
-- **THEN** viene servita dal modello principale, come sempre
-
-#### Scenario: Fallback a freddo
-
-- **WHEN** il servizio dedicato non è attivo
-- **THEN** la ⑤ usa il modello principale senza alcun errore per il ragazzo
-
-#### Scenario: Fallback a metà richiesta
-
-- **WHEN** il servizio dedicato accetta la connessione ma la chiude senza rispondere
-- **THEN** il turno non si perde: la richiesta riparte sul modello principale e la risposta arriva come JSON
-
-#### Scenario: Etichetta onesta nella tendina
-
-- **WHEN** il selettore della ⑤ mostra l'opzione locale
-- **THEN** dichiara il nome del modello che risponde davvero in quella tappa
-
 ### Requirement: Simulazione di carico e grafico dei token al secondo
 
 Il progetto SHALL fornire un comando (`make loadtest`) che simula N sessioni concorrenti di ragazzi, ognuna con una conversazione a più tappe sulle chat del gateway, producendo un report di esiti e latenze; le sessioni simulate SHALL risultare nell'osservabilità come sessioni normali. Il gateway SHALL registrare i token di prompt e completion di ogni interazione quando il servizio modello li espone, e il pannello educatore SHALL mostrare un grafico della serie tokens/secondo nel tempo, così che il degrado delle performance sotto carico sia visibile. Il grafico SHALL rappresentare la serie aggregata per fasce temporali come DUE linee — la media e il minimo di ogni fascia — senza il punta-punta di ogni singola chat raccolta. L'asse del tempo del grafico SHALL essere ancorato all'istante corrente e avanzare anche in assenza di nuove chat; la finestra del grafico SHALL corrispondere alla finestra temporale selezionata nel pannello (5m/10m/15m/30m/tutto); i 429 di backpressure SHALL essere rappresentati nel grafico come serie distinta da quella delle chat completate.
@@ -487,7 +429,7 @@ Il progetto SHALL fornire un comando (`make loadtest`) che simula N sessioni con
 
 La pagina del laboratorio SHALL mostrare, per la sessione del ragazzo corrente, un riquadro in **forma tabellare** che confronta i consumi stimati dell'attività svolta: per riga le metriche (energia in kWh, acqua in litri, costo in €), per colonna l'esecuzione locale (acqua ≈ 0 perché il calcolo sta nel locale del campo) e la stessa attività su UN modello di frontiera (energia, acqua e costo compresi). Le stime SHALL derivare da un modello di costo dichiarato e semplificato, con costanti raccolte in un unico punto modificabile e fonti indicate.
 
-Quando la sessione contiene anche interazioni su un endpoint remoto, il confronto locale-vs-frontiera SHALL essere calcolato sulle SOLE interazioni locali (i secondi e i token del data center remoto non sono consumi del mini PC). Quando il ragazzo si trova nella tappa ⑤ con un modello remoto selezionato, il riquadro SHALL mostrare DUE tabelle: la prima per il modello scelto — i token REALI dell'usage e il costo API calcolato a LISTINO STANDARD del modello, mai a prezzo sperimentale/scontato dell'offerta (il fatto che l'endpoint sia gratis oggi non è la lezione) — e la seconda per la sessione in locale (il confronto locale-vs-frontiera di sempre, calcolato sulle sole interazioni locali). Anche per i modelli remoti le costanti di prezzo SHALL vivere nello stesso unico modulo delle altre. Il banner dello stato del modello e il riquadro dei consumi SHALL stare in fondo alla pagina, dopo il riquadro di input della tappa e prima della navigazione (non in testa, dove spingevano giù spiegazione e chat).
+Quando la sessione contiene anche interazioni su un endpoint remoto, il confronto locale-vs-frontiera SHALL essere calcolato sulle SOLE interazioni locali (i secondi e i token del data center remoto non sono consumi del mini PC). Quando il ragazzo si trova nel laboratorio codice con un modello remoto selezionato, il riquadro SHALL mostrare DUE tabelle: la prima per il modello scelto — i token REALI dell'usage e il costo API calcolato a LISTINO STANDARD del modello, mai a prezzo sperimentale/scontato dell'offerta (il fatto che l'endpoint sia gratis oggi non è la lezione) — e la seconda per la sessione in locale (il confronto locale-vs-frontiera di sempre, calcolato sulle sole interazioni locali). Anche per i modelli remoti le costanti di prezzo SHALL vivere nello stesso unico modulo delle altre. Il banner dello stato del modello e il riquadro dei consumi SHALL stare in fondo alla pagina, dopo il riquadro di input e prima della navigazione (non in testa, dove spingevano giù spiegazione e chat).
 
 #### Scenario: Riquadro per la sessione del ragazzo
 
@@ -511,7 +453,7 @@ Quando la sessione contiene anche interazioni su un endpoint remoto, il confront
 
 #### Scenario: Tappa ⑤ con modello remoto: due tabelle
 
-- **WHEN** il ragazzo è nella tappa ⑤ con un modello remoto selezionato
+- **WHEN** il ragazzo è nel laboratorio codice con un modello remoto selezionato
 - **THEN** il riquadro mostra la tabella del modello scelto (token reali in ingresso/uscita e costo a listino) e la tabella della sessione in locale (confronto locale-vs-frontiera)
 
 #### Scenario: Modello scelto senza risposte ancora
@@ -526,17 +468,17 @@ Quando la sessione contiene anche interazioni su un endpoint remoto, il confront
 
 #### Scenario: Stato in fondo alla pagina
 
-- **WHEN** il ragazzo scorre una qualunque tappa
-- **THEN** il banner dello stato del modello e il riquadro dei consumi stanno dopo il riquadro di input della tappa e prima della navigazione, non in testa alla pagina
+- **WHEN** il ragazzo scorre una qualunque tappa o il laboratorio codice
+- **THEN** il banner dello stato del modello e il riquadro dei consumi stanno dopo il riquadro di input e prima della navigazione, non in testa alla pagina
 
 #### Scenario: Tornando alle altre tappe
 
-- **WHEN** il ragazzo lascia la tappa ⑤ o riporta il selettore sul modello locale
+- **WHEN** il ragazzo riporta il selettore del laboratorio codice sul modello locale
 - **THEN** il riquadro torna alla sola forma di confronto locale-vs-frontiera (calcolata sulle sole interazioni locali)
 
 ### Requirement: Backpressure con 429 al degrado del ritmo
 
-Quando la cadenza di generazione recente (token/secondo visti dal gateway) scende sotto la soglia di sovraccarico, il gateway SHALL rispondere alle nuove chat con 429 indicando il tempo di attesa consigliato (`retry_after`). La pagina SHALL avvisare il ragazzo del sovraccarico e ritentare automaticamente la richiesta dopo l'attesa indicata, senza perdere il turno; il retry NON è una tantum: finché il gateway risponde 429 la pagina continua a ritentare, con l'attesa resa visibile da un countdown. La soglia MUST NOT scattare a freddo (poche osservazioni) né rimanere bloccata: il verdetto si basa sulle osservazioni di una finestra TEMPORALE, non sugli ultimi N punti — le osservazioni oltre l'età massima non contano e il cancello si riapre da solo, entro l'età massima della finestra dall'ultima chat lenta completata, anche se i 429 non producono nuove osservazioni.
+Quando la cadenza di generazione recente (token/secondo visti dal gateway) scende sotto la soglia di sovraccarico, il gateway SHALL rispondere alle nuove chat con 429 indicando il tempo di attesa consigliato (`retry_after`). La pagina SHALL avvisare il ragazzo del sovraccarico e ritentare automaticamente la richiesta dopo l'attesa indicata, senza perdere il turno; il retry NON è una tantum: finché il gateway risponde 429 la pagina continua a ritentare, con l'attesa resa visibile da un countdown. La soglia MUST NOT scattare a freddo (poche osservazioni) né rimanere bloccata: il verdetto si basa sulle osservazioni di una finestra TEMPORALE, non sugli ultimi N punti — le osservazioni oltre l'età massima non contano e il cancello si riapre da solo, entro l'età massima della finestra dall'ultima chat lenta completata, anche se i 429 non producono nuove osservazioni. Il cancello si applica alle chat delle tappe ①–④ e alla skill: le richieste della tappa del laboratorio codice MUST NOT essere rifiutate per degrado del ritmo, e le loro osservazioni di velocità MUST NOT alimentare il verdetto del cancello (vivono in un contenitore separato, previsto dalla capability `laboratorio-code`).
 
 #### Scenario: Degrado → 429 con retry_after
 
@@ -562,3 +504,8 @@ Quando la cadenza di generazione recente (token/secondo visti dal gateway) scend
 
 - **WHEN** le osservazioni lente invecchiano oltre l'età massima della finestra temporale
 - **THEN** la soglia torna a non scattare finché nuove chat non dimostrino il contrario: niente lockout permanente — dopo la fine del carico i 429 cessano entro l'età massima della finestra, non restano a vita
+
+#### Scenario: Le generazioni del laboratorio codice non alimentano il cancello
+
+- **WHEN** il laboratorio codice completa generazioni lente (pagine intere a bassa cadenza)
+- **THEN** le chat delle tappe ①–④ non subiscono 429 per colpa di quelle osservazioni: il verdetto del cancello non le vede

@@ -251,11 +251,19 @@ class ChatBridgeTest(unittest.TestCase):
         self.llama_thread = threading.Thread(target=self.llama.serve_forever, daemon=True)
         self.llama_thread.start()
 
-        self._orig = (gateway.LLAMA_URL, gateway._TRACKER)
+        self._orig = (gateway.LLAMA_URL, gateway.CODER_URL, gateway._TRACKER,
+                      dict(gateway._CODER_CACHE))
         gateway.LLAMA_URL = self.llama_url
+        gateway.CODER_URL = "http://127.0.0.1:1"  # coder assente: fallback main
         # tracker fresco per test: il modulo potrebbe avere nello storico punti
         # token/s REALI (loadtest) che farebbero scattare la backpressure
         gateway._TRACKER = gateway.SessionTracker(None)
+        # laboratorio codice: la postazione di test (127.0.0.1) è abilitata
+        gateway._TRACKER.set_state("code_ips", "127.0.0.1")
+        # probe coder spento per 30 s: niente rete verso localhost:8082 reale
+        gateway._CODER_CACHE.clear()
+        gateway._CODER_CACHE.update({"ok": False, "ts": time.time(),
+                                     "name": None, "name_ts": 0.0})
         self.gw = ThreadingHTTPServer(("127.0.0.1", 0), gateway.Handler)
         self.gw_port = self.gw.server_address[1]
         self.gw_url = f"http://127.0.0.1:{self.gw_port}"
@@ -263,7 +271,9 @@ class ChatBridgeTest(unittest.TestCase):
         self.gw_thread.start()
 
     def tearDown(self) -> None:
-        gateway.LLAMA_URL, gateway._TRACKER = self._orig
+        (gateway.LLAMA_URL, gateway.CODER_URL, gateway._TRACKER,
+         gateway._CODER_CACHE) = self._orig
+        gateway._CODER_CACHE.update(self._orig[3])
         self.gw.shutdown(); self.gw.server_close(); self.gw_thread.join(timeout=2)
         self.llama.shutdown(); self.llama.server_close(); self.llama_thread.join(timeout=2)
 
@@ -288,12 +298,13 @@ class ChatBridgeTest(unittest.TestCase):
 
     # --- /api/chat happy + normalizzazione --------------------------------
 
-    def test_chat_step5_token_cap(self) -> None:
-        """Change temperatura-tappa5 (D4): il tetto token è policy di tappa,
-        decisa dal gateway via X-Step — la tappa ⑤ genera codice, le altre no."""
+    def test_chat_step_token_caps(self) -> None:
+        """Il tetto token è policy di tappa, decisa dal gateway via X-Step: lo
+        step "code" (laboratorio codice) ha il tetto dedicato a 4096, le tappe
+        ①–④ restano al regime difensivo di sempre (default 256, ceiling 768)."""
         _, body = self._post("/api/chat", {"messages": [{"role": "user", "content": "card"}]},
-                             {"X-Step": "5"})
-        self.assertEqual(body["trace"]["request"]["max_tokens"], 768)
+                             {"X-Step": "code"})
+        self.assertEqual(body["trace"]["request"]["max_tokens"], 4096)
         # altre tappe e assenza di header: default basso invariato
         _, b1 = self._post("/api/chat", {"messages": [{"role": "user", "content": "x"}]},
                            {"X-Step": "1"})
@@ -303,7 +314,7 @@ class ChatBridgeTest(unittest.TestCase):
         # preferenza esplicita del client: rispettata e clampata come prima
         _, b3 = self._post("/api/chat",
                            {"messages": [{"role": "user", "content": "x"}], "max_tokens": 100},
-                           {"X-Step": "5"})
+                           {"X-Step": "code"})
         self.assertEqual(b3["trace"]["request"]["max_tokens"], 100)
 
     def test_chat_tokens_recorded(self) -> None:
@@ -693,6 +704,380 @@ class ChatBridgeTest(unittest.TestCase):
         status, body = self._get("/api/model-status")
         self.assertEqual(status, 200)
         self.assertFalse(body["model_active"])
+
+
+class CodeLabPolicyTest(unittest.TestCase):
+    """Change laboratorio-code: policy gateway dello step "code" (D1–D6).
+
+    Il laboratorio codice è una tappa LOGICA separata (header X-Step: code) con
+    policy propria: tetto 4096, allowlist IP, esenzione backpressure + pool
+    separato, semaforo 1-generazione-alla-volta, timeout dedicato.
+    """
+
+    def setUp(self) -> None:
+        self.rec = _LlamaRec()
+        self.llama = ThreadingHTTPServer(("127.0.0.1", 0), _llama_handler(self.rec))
+        self.llama_thread = threading.Thread(target=self.llama.serve_forever, daemon=True)
+        self.llama_thread.start()
+
+        self._orig = (gateway.LLAMA_URL, gateway.CODER_URL, gateway._TRACKER,
+                      dict(gateway._CODER_CACHE))
+        gateway.LLAMA_URL = f"http://127.0.0.1:{self.llama.server_address[1]}"
+        gateway.CODER_URL = "http://127.0.0.1:1"  # coder assente: fallback main
+        gateway._TRACKER = gateway.SessionTracker(None)
+        # postazione abilitata di default (i test del gate la tolgono): l'IP di
+        # chi chiede via server in-process è 127.0.0.1
+        gateway._TRACKER.set_state("code_ips", "127.0.0.1")
+        # probe coder spento per 30 s: niente rete verso localhost:8082 reale
+        gateway._CODER_CACHE.clear()
+        gateway._CODER_CACHE.update({"ok": False, "ts": time.time(),
+                                     "name": None, "name_ts": 0.0})
+        self.gw = ThreadingHTTPServer(("127.0.0.1", 0), gateway.Handler)
+        self.gw_url = f"http://127.0.0.1:{self.gw.server_address[1]}"
+        self.gw_thread = threading.Thread(target=self.gw.serve_forever, daemon=True)
+        self.gw_thread.start()
+
+    def tearDown(self) -> None:
+        (gateway.LLAMA_URL, gateway.CODER_URL, gateway._TRACKER,
+         gateway._CODER_CACHE) = self._orig
+        gateway._CODER_CACHE.update(self._orig[3])
+        self.gw.shutdown(); self.gw.server_close(); self.gw_thread.join(timeout=2)
+        self.llama.shutdown(); self.llama.server_close(); self.llama_thread.join(timeout=2)
+
+    def _post(self, path: str, body: dict, headers: dict | None = None) -> tuple[int, dict]:
+        data = json.dumps(body).encode("utf-8")
+        req = urllib.request.Request(
+            self.gw_url + path, data=data,
+            headers={"Content-Type": "application/json", **(headers or {})}, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.status, json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read().decode("utf-8"))
+
+    def _get(self, path: str) -> tuple[int, dict]:
+        try:
+            with urllib.request.urlopen(self.gw_url + path, timeout=10) as r:
+                return r.status, json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read().decode("utf-8"))
+
+    def _msgs(self, text: str = "una pagina web") -> dict:
+        return {"messages": [{"role": "user", "content": text}]}
+
+    # --- 1.1: tetto dedicato ------------------------------------------------
+    def test_code_step_default_and_clamp(self) -> None:
+        """Il tetto della tappa code è 4096 (default e ceiling dedicati); per
+        le tappe ①–④ il regime non cambia: default 256, ceiling 768."""
+        _, b = self._post("/api/chat", self._msgs(), {"X-Step": "code"})
+        self.assertEqual(b["trace"]["request"]["max_tokens"], 4096)
+        # preferenza esplicita del client rispettata...
+        _, b = self._post("/api/chat", {**self._msgs(), "max_tokens": 100},
+                          {"X-Step": "code"})
+        self.assertEqual(b["trace"]["request"]["max_tokens"], 100)
+        # ...e clampata al tetto dedicato, non al ceiling delle altre
+        _, b = self._post("/api/chat", {**self._msgs(), "max_tokens": 99999},
+                          {"X-Step": "code"})
+        self.assertEqual(b["trace"]["request"]["max_tokens"], 4096)
+        # regime invariato per ①–④ (e header assente)
+        _, b = self._post("/api/chat", self._msgs("x"), {"X-Step": "1"})
+        self.assertEqual(b["trace"]["request"]["max_tokens"], 256)
+        _, b = self._post("/api/chat", {**self._msgs("x"), "max_tokens": 99999},
+                          {"X-Step": "2"})
+        self.assertEqual(b["trace"]["request"]["max_tokens"], 768)
+        _, b = self._post("/api/chat", {**self._msgs("x"), "max_tokens": 99999})
+        self.assertEqual(b["trace"]["request"]["max_tokens"], 768)
+
+    # --- 1.2: allowlist IP ---------------------------------------------------
+    def test_code_ip_not_allowed_403(self) -> None:
+        """IP fuori allowlist: 403 chiaro, NESSUNA chiamata al modello, riga
+        registrata (kind chat, step code, status 403)."""
+        gateway._TRACKER.set_state("code_ips", "10.0.0.1")  # postazione non abilitata
+        status, body = self._post("/api/chat", self._msgs(),
+                                  {"X-Step": "code", "X-Client-Id": "booth"})
+        self.assertEqual(status, 403)
+        self.assertIn("error", body)
+        self.assertIn("laboratorio codice", body["error"])
+        self.assertIsNone(self.rec.last_body)      # il modello non è toccato
+        _wait_tracked("booth")
+        row = gateway._TRACKER.timeline("booth")["interactions"][0]
+        self.assertEqual(row["step"], "code")
+        self.assertEqual(row["status"], 403)
+
+    def test_code_ip_empty_list_blocks_everyone(self) -> None:
+        """Allowlist vuota (default, mai configurata): il laboratorio codice
+        è spento per tutti — nessun 'open by default'."""
+        gateway._TRACKER.set_state("code_ips", "")
+        status, _ = self._post("/api/chat", self._msgs(), {"X-Step": "code"})
+        self.assertEqual(status, 403)
+
+    def test_code_ip_other_steps_not_gated(self) -> None:
+        # il gate è dello step code: le chat ①–④ non conoscono allowlist
+        gateway._TRACKER.set_state("code_ips", "")
+        status, _ = self._post("/api/chat", self._msgs("ciao"), {"X-Step": "1"})
+        self.assertEqual(status, 200)
+
+    def test_code_ip_runtime_change(self) -> None:
+        """La policy vale dal salvataggio, senza riavvii: tolgo l'IP → 403,
+        lo rimetto → 200."""
+        gateway._TRACKER.set_state("code_ips", "")
+        status, _ = self._post("/api/chat", self._msgs(), {"X-Step": "code"})
+        self.assertEqual(status, 403)
+        gateway._TRACKER.set_state("code_ips", "127.0.0.1")
+        status, _ = self._post("/api/chat", self._msgs(), {"X-Step": "code"})
+        self.assertEqual(status, 200)
+
+    def test_admin_code_ips_roundtrip_and_validation(self) -> None:
+        """POST/GET /api/admin/code-ips: lista o stringa separata da virgole,
+        solo IP ESATTI (niente CIDR), 400 con l'elenco dei rifiutati."""
+        status, body = self._post("/api/admin/code-ips",
+                                  {"ips": ["10.0.0.5", " 10.0.0.6 "]})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["ips"], ["10.0.0.5", "10.0.0.6"])
+        status, body = self._get("/api/admin/code-ips")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["ips"], ["10.0.0.5", "10.0.0.6"])
+        # la policy è già cambiata per questa postazione
+        status, _ = self._post("/api/chat", self._msgs(), {"X-Step": "code"})
+        self.assertEqual(status, 403)
+        # forma stringa (quella che salvano i campi di testo del pannello)
+        status, body = self._post("/api/admin/code-ips", {"ips": "10.0.0.5,127.0.0.1"})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["ips"], ["10.0.0.5", "127.0.0.1"])
+        # IP nonvalidi: 400 onesto, stato NON toccato
+        status, body = self._post("/api/admin/code-ips",
+                                  {"ips": ["10.0.0.5", "non-un-ip", "10.0.0.0/24"]})
+        self.assertEqual(status, 400)
+        self.assertIn("non-un-ip", body["error"])
+        _, body = self._get("/api/admin/code-ips")
+        self.assertEqual(body["ips"], ["10.0.0.5", "127.0.0.1"])
+        # body malformato / campo mancante
+        status, _ = self._post("/api/admin/code-ips", {"altro": 1})
+        self.assertEqual(status, 400)
+
+    def test_code_ips_survive_restart(self) -> None:
+        """L'allowlist vive nel kv della sessions.db: un riavvio del gateway
+        non la azzera (spec «Allowlist persistente»)."""
+        orig = gateway._TRACKER
+        tmp = tempfile.mkdtemp()
+        db = os.path.join(tmp, "s.db")
+        gateway._TRACKER = gateway.SessionTracker(db)
+        gateway._TRACKER.set_state("code_ips", "192.168.1.7")
+        try:
+            gateway._TRACKER = gateway.SessionTracker(db)  # gateway riavviato
+            self._post("/api/chat", self._msgs(),
+                       {"X-Step": "code", "X-Real-IP": "192.168.1.7"})
+            status, _ = self._post("/api/chat", self._msgs(),
+                                   {"X-Step": "code", "X-Real-IP": "192.168.1.99"})
+            self.assertEqual(status, 403)  # l'allowlist sopravvissuta dice ancora no
+        finally:
+            gateway._TRACKER = orig
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    # --- 1.3: stato per il client -------------------------------------------
+    def test_model_status_code_block(self) -> None:
+        """/api/model-status porta code {allowed, active, model, ctx} calcolato
+        sull'IP di CHI chiede: il client sa solo il proprio esito."""
+        _, body = self._get("/api/model-status")
+        self.assertTrue(body["code"]["allowed"])       # 127.0.0.1 è in lista
+        self.assertFalse(body["code"]["active"])       # coder assente (setUp)
+        self.assertEqual(body["code"]["ctx"], gateway.LLAMA_CTX)  # fallback main
+        gateway._TRACKER.set_state("code_ips", "10.0.0.1")
+        _, body = self._get("/api/model-status")
+        self.assertFalse(body["code"]["allowed"])
+
+    def test_model_status_never_leaks_ip_list(self) -> None:
+        """La lista degli IP abilitati non arriva MAI ai client generici."""
+        gateway._TRACKER.set_state("code_ips", "10.1.2.3,10.1.2.4")
+        _, body = self._get("/api/model-status")
+        dumped = json.dumps(body)
+        self.assertNotIn("10.1.2.3", dumped)
+        self.assertNotIn("10.1.2.4", dumped)
+        self.assertNotIn("ips", dumped)
+
+    # --- 1.4: esenzione backpressure + pool separato -------------------------
+    def test_code_slowness_does_not_trip_backpressure(self) -> None:
+        """Generazioni code lente (pagina intera a 0,5 t/s è il NORMALE): le
+        loro osservazioni non alimentano il cancello — la chat ① passa."""
+        orig = gateway._TRACKER
+        slow = gateway.SessionTracker(None)
+        for _ in range(5):
+            slow.record("coder", "chat", "code", 200, 1, 1, 10000.0,
+                        tok_in=1, tok_out=5)
+        gateway._TRACKER = slow
+        try:
+            status, body = self._post("/api/chat", self._msgs("ciao"), {"X-Step": "1"})
+        finally:
+            gateway._TRACKER = orig
+        self.assertEqual(status, 200)
+        self.assertIn("reply", body)
+
+    def test_code_requests_bypass_overload_gate(self) -> None:
+        """Cancello LOCALE scattato (chat ① lente): la richiesta code non passa
+        dal cancello — la lentezza del coder non è un rifiuto (spec)."""
+        orig = gateway._TRACKER
+        slow = gateway.SessionTracker(None)
+        slow.set_state("code_ips", "127.0.0.1")  # il gate IP resta soddisfatto
+        for _ in range(5):
+            slow.record("slow", "chat", "1", 200, 1, 1, 5000.0, tok_in=1, tok_out=5)
+        gateway._TRACKER = slow
+        try:
+            status, _ = self._post("/api/chat", self._msgs(), {"X-Step": "code"})
+            self.assertEqual(status, 200)
+            # regime invariato: la chat ① nello stesso stato riceve 429
+            status, _ = self._post("/api/chat", self._msgs("ciao"), {"X-Step": "1"})
+            self.assertEqual(status, 429)
+        finally:
+            gateway._TRACKER = orig
+
+    def test_code_points_in_separate_pool(self) -> None:
+        """I punti token/s della tappa code vivono in un pool SEPARATO: il
+        grafico li può mostrare, il cancello non li vede."""
+        orig = gateway._TRACKER
+        tmp = tempfile.mkdtemp()
+        fresh = gateway.SessionTracker(os.path.join(tmp, "s.db"))
+        fresh.set_state("code_ips", "127.0.0.1")
+        gateway._TRACKER = fresh
+        try:
+            self._post("/api/chat", self._msgs(), {"X-Step": "code", "X-Client-Id": "ck"})
+            self._post("/api/chat", self._msgs("ciao"), {"X-Step": "1", "X-Client-Id": "l1"})
+            _wait_tracked("ck"); _wait_tracked("l1")
+            status, body = self._get("/api/tps")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+            gateway._TRACKER = orig
+        self.assertEqual(status, 200)
+        pools = {p["client"] for p in body["points"]}
+        self.assertEqual(pools, {"l1"})              # solo la chat ①
+        self.assertEqual({p["client"] for p in body["code"]["points"]}, {"ck"})
+
+    # --- 1.5: semaforo 1-generazione-alla-volta ------------------------------
+    def _slow_llama(self, delay: float) -> tuple[ThreadingHTTPServer, threading.Thread]:
+        class SlowLlama(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                if self.path == "/health":
+                    b = json.dumps({"status": "ok"}).encode()
+                else:
+                    b = json.dumps({}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(b)))
+                self.end_headers()
+                self.wfile.write(b)
+
+            def do_POST(self) -> None:  # noqa: N802
+                n = int(self.headers.get("Content-Length") or 0)
+                self.rfile.read(n)
+                time.sleep(delay)
+                b = json.dumps({"choices": [{"message": {"content": "pagina"}}],
+                                "usage": {"prompt_tokens": 3, "completion_tokens": 1}}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(b)))
+                self.end_headers()
+                self.wfile.write(b)
+
+            def log_message(self, fmt, *args) -> None:
+                pass
+
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), SlowLlama)
+        th = threading.Thread(target=srv.serve_forever, daemon=True)
+        th.start()
+        return srv, th
+
+    def test_code_semaphore_rejects_concurrent(self) -> None:
+        """Una generazione locale alla volta per la tappa code: la concorrente
+        riceve 429 con retry_after (onesto), senza accodarsi."""
+        slow, sth = self._slow_llama(0.8)
+        orig = gateway.LLAMA_URL
+        gateway.LLAMA_URL = f"http://127.0.0.1:{slow.server_address[1]}"
+        results: dict[str, tuple[int, dict]] = {}
+
+        def fire(cid: str) -> None:
+            results[cid] = self._post("/api/chat", self._msgs(),
+                                      {"X-Step": "code", "X-Client-Id": cid})
+
+        try:
+            t1 = threading.Thread(target=fire, args=("prima",))
+            t1.start()
+            time.sleep(0.3)                 # la prima tiene il semaforo
+            fire("seconda")                 # concorrente: rifiutata subito
+            t1.join(timeout=5)
+            self.assertEqual(results["prima"][0], 200)    # la prima passa
+            status, body = results["seconda"]
+            self.assertEqual(status, 429)
+            self.assertTrue(body["busy"])
+            self.assertGreater(body["retry_after"], 0)
+            # rilasciata a fine generazione: la prossima riparte
+            status, _ = self._post("/api/chat", self._msgs(), {"X-Step": "code"})
+            self.assertEqual(status, 200)
+        finally:
+            gateway.LLAMA_URL = orig
+            slow.shutdown(); slow.server_close(); sth.join(timeout=2)
+
+    def test_code_semaphore_released_on_error(self) -> None:
+        """Il semaforo si rilascia ANCHE a fine generazione con errore: un
+        modello giù non lascia il laboratorio bloccato a vita."""
+        dead = gateway.LLAMA_URL
+        gateway.LLAMA_URL = "http://127.0.0.1:1"  # modello giù
+        try:
+            status, _ = self._post("/api/chat", self._msgs(), {"X-Step": "code"})
+            self.assertEqual(status, 503)
+        finally:
+            gateway.LLAMA_URL = dead
+        # semaforo libero: col modello tornato si genera
+        status, _ = self._post("/api/chat", self._msgs(), {"X-Step": "code"})
+        self.assertEqual(status, 200)
+
+    def test_semaphore_only_on_code_step(self) -> None:
+        """Il semaforo è della tappa code: due chat ① in parallelo non si
+        rifiutano tra loro (il regime ①–④ non cambia)."""
+        slow, sth = self._slow_llama(0.5)
+        orig = gateway.LLAMA_URL
+        gateway.LLAMA_URL = f"http://127.0.0.1:{slow.server_address[1]}"
+        results: list[tuple[int, dict]] = []
+
+        def fire() -> None:
+            results.append(self._post("/api/chat", self._msgs("ciao"), {"X-Step": "1"}))
+
+        try:
+            t1 = threading.Thread(target=fire); t2 = threading.Thread(target=fire)
+            t1.start(); t2.start()
+            t1.join(timeout=5); t2.join(timeout=5)
+        finally:
+            gateway.LLAMA_URL = orig
+            slow.shutdown(); slow.server_close(); sth.join(timeout=2)
+        self.assertEqual([r[0] for r in results], [200, 200])
+
+    # --- 1.6: timeout dedicato ------------------------------------------------
+    def test_code_dedicated_timeout(self) -> None:
+        """La path code attende fino a 900 s (4096 token a ~4,5 t/s = 15 min):
+        con il timeout dedicato accorciato la lentezza diventa 504 JSON; la
+        chat ① sullo stesso modello lento risponde regolare (240 s)."""
+        slow, sth = self._slow_llama(0.8)
+        orig = (gateway.LLAMA_URL, gateway._CODE_PROXY_TIMEOUT)
+        gateway.LLAMA_URL = f"http://127.0.0.1:{slow.server_address[1]}"
+        gateway._CODE_PROXY_TIMEOUT = 0.2
+        try:
+            status, body = self._post("/api/chat", self._msgs(),
+                                      {"X-Step": "code", "X-Client-Id": "slowcode"})
+            self.assertEqual(status, 504)
+            self.assertIn("non ha risposto in tempo", body["error"])
+            _wait_tracked("slowcode")
+            row = gateway._TRACKER.timeline("slowcode")["interactions"][0]
+            self.assertEqual(row["status"], 504)
+            # la chat ① usa il timeout di sempre (240 s): il modello lento risponde
+            status, _ = self._post("/api/chat", self._msgs("ciao"), {"X-Step": "1"})
+            self.assertEqual(status, 200)
+        finally:
+            gateway.LLAMA_URL, gateway._CODE_PROXY_TIMEOUT = orig
+            slow.shutdown(); slow.server_close(); sth.join(timeout=2)
+
+    def test_code_timeout_constant_above_default(self) -> None:
+        # catena dichiarata (D5): gateway code 900 s < nginx 960 s, e il 240 s
+        # resta quello delle altre chat
+        self.assertGreater(gateway._CODE_PROXY_TIMEOUT, gateway._PROXY_TIMEOUT)
+        self.assertEqual(gateway._CODE_PROXY_TIMEOUT, 900)
 
 
 class ObservabilityTest(unittest.TestCase):
@@ -1259,6 +1644,9 @@ class JsSyntaxTest(unittest.TestCase):
     def test_admin_js_syntax(self) -> None:
         self._check("backend/web/static/admin.html")
 
+    def test_code_js_syntax(self) -> None:
+        self._check("backend/web/static/code.html")
+
 
 class NginxTierTest(unittest.TestCase):
     """Tier statico nginx: verifica della CONFIG (il processo gira nel compose).
@@ -1275,6 +1663,7 @@ class NginxTierTest(unittest.TestCase):
     def test_static_assets_present(self) -> None:
         for rel in ["backend/web/static/index.html",
                     "backend/web/static/admin.html",
+                    "backend/web/static/code.html",
                     "backend/web/static/favicon.svg"]:
             self.assertTrue(os.path.isfile(os.path.join(_REPO, rel)), rel)
 
@@ -1283,6 +1672,14 @@ class NginxTierTest(unittest.TestCase):
         self.assertIn("Laboratorio di Prompting", body)
         self.assertNotIn("https://", body)
         self.assertNotIn("<link", body)  # niente fogli di stile esterni
+
+    def test_code_page_zero_cdn(self) -> None:
+        """La pagina del laboratorio codice è leggera e offline come index:
+        zero CDN, un solo file, sprite SVG interno."""
+        body = self._read("backend/web/static/code.html")
+        self.assertIn("Laboratorio codice", body)
+        self.assertNotIn("https://", body)
+        self.assertNotIn("<link", body)
 
     def test_nginx_proxies_api_to_gateway(self) -> None:
         conf = self._read("nginx.conf")
@@ -1303,7 +1700,8 @@ class NginxTierTest(unittest.TestCase):
 
     def test_static_tier_has_no_model_params(self) -> None:
         """D4/spec: nessun parametro del modello nel tier di presentazione."""
-        for rel in ["backend/web/static/index.html", "backend/web/static/admin.html"]:
+        for rel in ["backend/web/static/index.html", "backend/web/static/admin.html",
+                    "backend/web/static/code.html"]:
             body = self._read(rel)
             self.assertNotIn("repeat_penalty", body)
             self.assertNotIn("max_tokens", body)
@@ -1324,6 +1722,7 @@ class NginxTierTest(unittest.TestCase):
             "]")
         for rel in ["backend/web/static/index.html",
                     "backend/web/static/admin.html",
+                    "backend/web/static/code.html",
                     "backend/web/static/favicon.svg"]:
             body = self._read(rel)
             m = emoji.search(body)
@@ -1376,8 +1775,9 @@ class ContextMemoryPageTest(unittest.TestCase):
         self.assertIn("2048", body)                 # limite reale (-c 2048)
 
     def test_context_meter_on_all_chats(self) -> None:
-        # 5 chat metered: tab A, tab B, tappe ② ③ e ⑤ (la barra non sparisce)
-        self.assertEqual(self._read().count("meter: true"), 5)
+        # 4 chat metered: tab A, tab B, tappe ② e ③ (la barra non sparisce);
+        # la quinta chat (ex ⑤) vive ora nella pagina del laboratorio codice
+        self.assertEqual(self._read().count("meter: true"), 4)
 
     def test_new_conversation_button(self) -> None:
         body = self._read()
@@ -1464,21 +1864,28 @@ class SkillWorkflowPageTest(unittest.TestCase):
                   encoding="utf-8") as f:
             return f.read()
 
-    # --- Percorso a cinque tappe -------------------------------------------
-    def test_five_steps_in_order(self) -> None:
+    # --- Percorso a quattro tappe -------------------------------------------
+    def test_four_steps_in_order(self) -> None:
+        """Change laboratorio-code (D9): la ⑤ (Prompt Engineering) lascia la
+        pagina del percorso guidato — è il laboratorio codice, su pagina
+        dedicata. Qui NON compaiono link né riferimenti: l'accesso lo dà
+        l'educatore, che la apre dal pannello /admin."""
         import re
         body = self._read()
         dots = re.findall(r'data-step-dot="(\d)"[^>]*>([^<]+)<', body)
-        self.assertEqual([d[0] for d in dots], ["0", "1", "2", "3", "4"])
+        self.assertEqual([d[0] for d in dots], ["0", "1", "2", "3"])
         labels = " ".join(d[1] for d in dots)
-        for lbl in ("① Context", "② System", "③ Skills", "④ Workflow", "⑤ Prompt Engineering"):
+        for lbl in ("① Context", "② System", "③ Skills", "④ Workflow"):
             self.assertIn(lbl, labels)
-        self.assertIn("maxStep: 5", body)
+        self.assertIn("maxStep: 4", body)
         # le sezioni seguono lo stesso ordine dei dot
         heads = re.findall(r'<section class="step" data-step="(\d)">\s*<h2>(.+?)</h2>', body)
-        self.assertEqual([h[0] for h in heads], ["0", "1", "2", "3", "4"])
+        self.assertEqual([h[0] for h in heads], ["0", "1", "2", "3"])
         self.assertIn("④ Workflow", heads[3][1])
-        self.assertIn("⑤ Prompt Engineering", heads[4][1])
+        # nessuna traccia della quinta tappa: né sezione, né link, né icone
+        self.assertNotIn("Prompt Engineering", body)
+        self.assertNotIn("code.html", body)
+        self.assertNotIn('id="tb5"', body)
 
     # --- Tappa ③: skill leggibile a due livelli ------------------------------
     def test_step3_skill_panel_two_levels(self) -> None:
@@ -1626,32 +2033,14 @@ class SkillWorkflowPageTest(unittest.TestCase):
         self.assertEqual(empty, [], msg=f"aree vuote nell'esempio completo: {empty}")
 
     # --- Sanità DOM: ogni id usato dal JS esiste nel markup ------------------
-    # --- Tappa ⑤: temperatura regolabile (change temperatura-tappa5) --------
-    def test_step5_temperature_slider(self) -> None:
+    # --- Ex tappa ⑤: temperatura e tetto alto vivono ora nella pagina del
+    # --- laboratorio codice (CodeLabPageTest copre quel contratto; qui si
+    # --- verifica che in index non ne resti traccia) --------------------------
+    def test_no_step5_remnants(self) -> None:
         body = self._read()
-        # slider nei limiti del gateway, default di aderenza, valore live
-        self.assertIn('id="temp5"', body)
-        self.assertIn('min="0"', body)
-        self.assertIn('max="1.5"', body)
-        self.assertIn('step="0.1"', body)
-        self.assertIn('value="0.3"', body)
-        self.assertIn("temp5-val", body)
-        # didattica: una riga che spiega il significato
-        self.assertIn("ripetitiva", body)
-        # makeChat legge la temperatura anche come funzione (pattern seed)
-        self.assertIn("typeof opts.temperature", body)
-        # wiring: la tappa ⑤ invia il valore corrente dello slider
-        self.assertIn("temp5Value", body)
-
-    def test_step5_declares_high_token_cap(self) -> None:
-        # il tetto lo decide il gateway per tappa (X-Step); la pagina lo
-        # dichiara soltanto — e il test incrocia pagina e gateway, come già
-        # fa test_displayed_limits_match_gateway_defaults per il default basso
-        body = self._read()
-        with open(os.path.join(_REPO, "backend/gateway.py"), encoding="utf-8") as f:
-            gw = f.read()
-        self.assertIn('_CHAT_STEP_MAX_TOKENS = {"5": 768}', gw)
-        self.assertIn("maxOut: 768", body)
+        for marker in ('id="temp5"', "maxOut: 768", 'id="model-pick"',
+                       'id="html-preview"', 'id="tb5"', "shortModelName"):
+            self.assertNotIn(marker, body, msg=f"residuo della ⑤: {marker}")
 
     # --- Riquadro consumi nella pagina del laboratorio (revisione del change
     # readme-loadtest-consumi: la sessione del ragazzo corrente, non l'admin) --
@@ -1722,6 +2111,242 @@ class SkillWorkflowPageTest(unittest.TestCase):
         self.assertTrue(used, "nessun id estratto: il pattern del test è rotto")
         self.assertEqual(used - defined, set(),
                          msg=f"id usati nel JS ma assenti dal markup: {used - defined}")
+
+
+class CodeLabPageTest(unittest.TestCase):
+    """Change laboratorio-code: contratto strutturale della pagina dedicata
+    `code.html` (step "code"), come gli altri page-test: marcatori DOM/JS.
+    Il comportamento end-to-end è coperto dalla prova a due postazioni (task
+    6.3) e dal gate del gateway (CodeLabPolicyTest)."""
+
+    def _read(self) -> str:
+        with open(os.path.join(_REPO, "backend/web/static/code.html"),
+                  encoding="utf-8") as f:
+            return f.read()
+
+    # --- 2.1: scheletro, identità, limiti -----------------------------------
+    def test_page_identity_and_step(self) -> None:
+        body = self._read()
+        self.assertIn("Laboratorio codice", body)
+        self.assertIn("lab_cid", body)            # identità client (X-Client-Id)
+        self.assertIn("labFetch", body)           # fetch con header lab
+        self.assertIn('step: "code"', body)       # header X-Step: code, sempre
+        self.assertIn("/api/chat", body)          # solo endpoint del gateway
+
+    def test_declared_limits_match_gateway(self) -> None:
+        """Tetto 4096 e finestra di contesto del servizio che risponde: i
+        valori dichiarati devono essere quelli applicati dal gateway. Il tetto
+        è la costante di tappa; il contesto arriva da model-status.code.ctx
+        (2048 col main, 8192 col coder) — mai hardcoded uno solo."""
+        body = self._read()
+        self.assertIn("maxOut: 4096", body)
+        self.assertIn("code.ctx", body)            # limite contesto dal gateway
+        self.assertIn("limiti imposti dal server", body)
+
+    def test_context_meter(self) -> None:
+        body = self._read()
+        self.assertIn("ctx-meter", body)           # barra + testo uso/limite
+        self.assertIn("prompt_tokens", body)       # token reali dal modello
+        self.assertIn("Nuova conversazione", body) # reset quando il contesto si riempie
+        self.assertIn("Contesto pieno", body)      # messaggio amichevole
+
+    # --- 2.2: seme + temperatura --------------------------------------------
+    def test_seed_asks_full_page_single_file(self) -> None:
+        """Il prompt seme chiede una pagina HTML COMPLETA con <style> incorporato
+        e nessun asset esterno: un file unico, sola risposta-codice."""
+        import re
+        body = self._read()
+        m = re.search(r'var SEED = "([^"]*)"', body)
+        self.assertIsNotNone(m, "SEED non dichiarata come costante")
+        seed = m.group(1)
+        self.assertIn("pagina HTML completa", seed)
+        self.assertIn("<style>", seed)
+        self.assertIn("nessun file esterno", seed.lower())
+        self.assertIn("SOLO il codice", seed)
+
+    def test_temperature_slider(self) -> None:
+        body = self._read()
+        self.assertIn('id="temp"', body)
+        self.assertIn('min="0"', body)
+        self.assertIn('max="1.5"', body)
+        self.assertIn('step="0.1"', body)
+        self.assertIn('value="0.3"', body)         # default di aderenza
+        self.assertIn("temp-val", body)            # valore live
+        self.assertIn("tempValue", body)           # inviata a ogni richiesta
+        self.assertIn("typeof opts.temperature", body)
+
+    # --- 2.3: barra artefatto -------------------------------------------------
+    def test_artifact_copy_fallback_exec_command(self) -> None:
+        """Copia in un click anche su LAN HTTP (non secure context: niente
+        navigator.clipboard): textarea temporanea + execCommand, con feedback
+        visibile «Copiato» (icona/testo, mai emoji)."""
+        body = self._read()
+        self.assertIn('id="copy-btn"', body)
+        self.assertIn("execCommand", body)
+        self.assertIn("copyArtifact", body)
+        self.assertIn("Copiato", body)
+
+    def test_artifact_download_and_open(self) -> None:
+        """Tre strade per lo stesso file unico: copia, scarico .html (Blob +
+        a[download]) e apertura in nuova scheda (Blob URL, degrada senza
+        errori se il kiosk blocca i popup)."""
+        body = self._read()
+        self.assertIn('id="download-btn"', body)
+        self.assertIn('id="open-btn"', body)
+        self.assertIn("downloadArtifact", body)
+        self.assertIn("openArtifact", body)
+        self.assertIn("new Blob", body)
+        self.assertIn('a[download]'.replace("a[", "").replace("]", ""), body)  # attr download
+        self.assertIn(".html", body)
+        self.assertIn("createObjectURL", body)
+
+    def test_preview_sandboxed_iframe(self) -> None:
+        """Anteprima grande: iframe sandbox senza script eseguibili né
+        same-origin; stripFences riportata dall'anteprima della vecchia ⑤."""
+        body = self._read()
+        self.assertIn('id="html-preview"', body)
+        self.assertIn('sandbox=""', body)
+        self.assertIn("srcdoc", body)
+        self.assertIn("stripFences", body)
+
+    def test_reply_activates_artifact_flow(self) -> None:
+        """Regressione (trovata al primo collaudo): la factory dichiarava
+        onReply ma non la invocava MAI — la risposta arrivava e barra
+        artefatto/anteprima restavano morte (lastArtifact vuoto, i pulsanti
+        uscivano in silenzio). Il contratto è la CHIAMATA dopo la risposta,
+        non la sola dichiarazione nelle opzioni."""
+        body = self._read()
+        # la factory invoca il callback dopo la risposta (col body: dice chi)
+        self.assertIn("opts.onReply(j.reply, j)", body)
+        # la chat code collega il callback alla barra artefatto
+        self.assertIn("artifactArrived(stripFences(reply));", body)
+        # e artifactArrived mostra la barra e alimenta copia/scarica/apri/preview
+        self.assertIn("lastArtifact = html", body)
+        self.assertIn('document.getElementById("artifact-bar").hidden = !html', body)
+
+    # --- 2.5: gate in pagina ---------------------------------------------------
+    def test_gate_reads_model_status(self) -> None:
+        """Al caricamento la pagina legge model-status.code.allowed: la
+        policy è del gateway, la pagina al massimo mostra. Postazione non
+        abilitata → messaggio amichevole al posto della chat, toolbox off."""
+        body = self._read()
+        self.assertIn("/api/model-status", body)
+        self.assertIn("code.allowed", body)
+        self.assertIn("code-gate", body)           # il messaggio amichevole
+        self.assertIn("renderGate", body)
+        self.assertIn("setDisabled(true)", body)   # toolbox disabilitato
+
+    def test_403_handled_friendly(self) -> None:
+        """Se il gate scatta DOPO il caricamento (IP rimosso a runtime), la
+        risposta 403 arriva come messaggio chiaro, non come errore grezzo."""
+        body = self._read()
+        self.assertIn("code_forbidden", body)
+        self.assertIn("avvisa l'educatore", body)
+
+    def test_banner_is_about_this_page(self) -> None:
+        """Il banner di code.html parla solo di questa pagina: nessun modello
+        principale del percorso, nessun conteggio ragazzi (feedback di campo:
+        il banner ereditato da index nominava il main anche col coder attivo).
+        Lo stato neutro esiste PRIMA del primo invio."""
+        import re
+        body = self._read()
+        m = re.search(r"function renderBanner\(\) \{[\s\S]*?\n\}", body)
+        self.assertIsNotNone(m, "renderBanner non trovata in code.html")
+        src = m.group(0)
+        self.assertIn("Genera ", src)                  # parla di chi genera qui
+        self.assertIn("lastGenerator", src)            # segue la conversazione
+        self.assertIn("Modello pronto", src)           # stato neutro pre-invio
+        self.assertNotIn("ragazzi connessi", body)     # niente conteggio globale
+
+    def test_generator_banner_follows_conversation(self) -> None:
+        """Il «Genera X» del banner è legato ALLA RISPOSTA, non alla tendina:
+        compare solo dopo un invio, col nome che il gateway conferma
+        (j.remote + j.model per l'endpoint reale; in locale chi risponde in
+        tappa, fallback dichiarato), e sparisce con «Nuova conversazione»
+        o col cambio modello (che azzera la conversazione)."""
+        body = self._read()
+        # la factory passa la risposta intera al callback
+        self.assertIn("opts.onReply(j.reply, j)", body)
+        # il nome viene dalla risposta: remoto dal body, locale da chi risponde
+        self.assertIn("j.remote", body)
+        self.assertIn("j.model", body)
+        self.assertIn("coder dedicato non attivo", body)   # fallback dichiarato
+        # e si azzera col reset (bottone e cambio modello passano da lì)
+        self.assertIn("opts.onReset()", body)           # la factory lo invoca
+        self.assertIn("lastGenerator = null", body)     # il callback lo azzera
+
+    # --- semaforo e attese ------------------------------------------------------
+    def test_busy_429_countdown_and_retry(self) -> None:
+        """429 busy del semaforo: la pagina avvisa e riprova da sola dopo il
+        retry_after (pattern overload riusato), il turno non si perde."""
+        body = self._read()
+        self.assertIn("j.busy", body)
+        self.assertIn("retry_after", body)
+        self.assertIn("una generazione alla volta", body)
+
+    def test_client_timeout_above_gateway(self) -> None:
+        """Catena D5: il client attende 930 s, sopra i 900 del gateway (che
+        risponde sempre un JSON, anche il 504) e sotto i 960 di nginx."""
+        body = self._read()
+        self.assertIn("930000", body)
+
+    def test_truncation_note(self) -> None:
+        body = self._read()
+        self.assertIn('finish_reason === "length"', body)
+        self.assertIn("tagliata dal limite", body)
+
+    # --- sanità DOM ---------------------------------------------------------------
+    def test_every_js_id_exists_in_markup(self) -> None:
+        import re
+        body = self._read()
+        js = re.search(r"<script>(.*)</script>", body, re.S).group(1)
+        used = set(re.findall(r'getElementById\("([^"]+)"\)', js))
+        defined = set(re.findall(r'id="([^"]+)"', body))
+        self.assertTrue(used, "nessun id estratto: il pattern del test è rotto")
+        self.assertEqual(used - defined, set(),
+                         msg=f"id usati nel JS ma assenti dal markup: {used - defined}")
+
+    def test_no_link_to_wizard(self) -> None:
+        """La pagina è autonoma: niente link/torna-a che rompano il kiosk; e
+        niente emoji (il font del kiosk non le copre)."""
+        import re
+        body = self._read()
+        # il seme cita «SpaceShooter/index.html» come href del PULSANTE da
+        # generare: è prosa del prompt, non un link della pagina — fuori dal controllo
+        body = re.sub(r'var SEED = "[^"]*"', "", body)
+        self.assertNotIn("index.html", body)
+        emoji = re.compile(
+            "[\U0001F000-\U0001FAFF☀-⛿✀-✒✔✖-➿⬀-⯿️]")
+        self.assertIsNone(emoji.search(body))
+
+
+class ModelPollRecoveryTest(unittest.TestCase):
+    """Regressione di campo: il poll di model-status si riprogrammava SOLO
+    nel ramo di successo — alla prima caduta del server (educatore che
+    riavvia lo stack) la pagina restava su «Modello NON attivo» a vita,
+    anche a server tornato. Il poll va riprogrammato in OGNI esito."""
+
+    def _check(self, rel: str) -> None:
+        import re
+        with open(os.path.join(_REPO, rel), encoding="utf-8") as f:
+            body = f.read()
+        m = re.search(r"function checkModel\(\) \{[\s\S]*?\n\}", body)
+        self.assertIsNotNone(m, f"{rel}: checkModel non trovata")
+        src = m.group(0)
+        # il poll è riprogrammato sia a successo sia a errore: nessun esito
+        # che lasci la pagina ferma sul suo ultimo verdict
+        self.assertEqual(src.count("setTimeout(checkModel"), 2,
+                         msg=f"{rel}: il poll non riparte in entrambi i rami")
+        # e nel ramo di errore c'è davvero (non solo nel then)
+        catch = re.search(r"\.catch\(function \(\) \{[\s\S]*?\}\);", src)
+        self.assertIsNotNone(catch, f"{rel}: catch di checkModel non trovato")
+        self.assertIn("setTimeout(checkModel", catch.group(0))
+
+    def test_index_poll_recovers(self) -> None:
+        self._check("backend/web/static/index.html")
+
+    def test_code_poll_recovers(self) -> None:
+        self._check("backend/web/static/code.html")
 
 
 class ModuleIndependenceTest(unittest.TestCase):
