@@ -119,8 +119,9 @@ Come funziona (policy nel gateway, header `X-Step: code`):
   lista riceve un 403 chiaro e la pagina lo dice in modo amichevole. La lista
   non è mai esposta ai client: `model-status` riporta solo l'esito di chi
   chiede.
-- **Tetto dedicato**: 4096 token di risposta (le chat ①–④ restano a
-  256/768); se la pagina esce troncata (`finish_reason: length`) la pagina
+- **Tetto dedicato**: 4096 token di risposta (le chat ①②④ restano a
+  256/768; la ③, la tappa della skill, a 512); se la pagina esce troncata
+  (`finish_reason: length`) la pagina
   lo dice e il ragazzo lo riconduce al limite dichiarato.
 - **Una generazione alla volta** in locale: le richieste concorrenti ricevono
   429 con `retry_after` e la pagina riprova da sola (countdown, turno non

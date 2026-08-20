@@ -135,9 +135,12 @@ _CHAT_MAX_TOKENS_CEILING = 768
 _CODE_STEP = "code"
 # Tetto token per tappa (policy del gateway): il laboratorio codice genera una
 # pagina HTML+CSS completa in file unico e il ceiling difensivo delle altre
-# chat la taglierebbe a un quarto — tetto e ceiling DEDICATI (D3). Le tappe
-# ①–④ restano al regime di sempre (default 256, ceiling 768).
-_CHAT_STEP_MAX_TOKENS = {"code": 4096}
+# chat la taglierebbe a un quarto — tetto e ceiling DEDICATI (D3). La tappa ③
+# (skill) ha il doppio delle altre: prima del trigger è chat libera e le
+# risposte tagliate a metà frase si vedevano; con la skill caricata la domanda
+# breve si ferma comunque a EOS, il tetto non è un target. ①②④ restano al
+# regime di sempre (default 256, ceiling 768).
+_CHAT_STEP_MAX_TOKENS = {"3": 512, "code": 4096}
 # Backpressure (revisione 11): se la mediana delle chat RECENTI scende sotto
 # questa cadenza (token/s visti dal gateway), le nuove arrivano 429 con
 # retry_after — il client avvisa il ragazzo e riprova da solo. Mai a freddo:

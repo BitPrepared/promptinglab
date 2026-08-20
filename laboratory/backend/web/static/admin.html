@@ -109,6 +109,7 @@
   <symbol id="i-person" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="5" r="2.7"/><path d="M2.8 14c.6-3.3 2.7-5 5.2-5s4.6 1.7 5.2 5"/></symbol>
   <symbol id="i-cloud" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.4h6.1a2.9 2.9 0 0 0 .5-5.7 4.3 4.3 0 0 0-8.2-.8A3.2 3.2 0 0 0 5 12.4Z"/></symbol>
   <symbol id="i-robot" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3.4" y="6" width="9.2" height="7" rx="1.4"/><path d="M8 6V4.2"/><circle cx="8" cy="3.1" r=".9"/><circle cx="6.1" cy="9.6" r=".75" fill="currentColor" stroke="none"/><circle cx="9.9" cy="9.6" r=".75" fill="currentColor" stroke="none"/><path d="M6.2 12.1h3.6"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.2"/><path d="M10.5 5.5V3.8a1.3 1.3 0 0 0-1.3-1.3H3.8a1.3 1.3 0 0 0-1.3 1.3v5.4a1.3 1.3 0 0 0 1.3 1.3h1.7"/></symbol>
 </defs></svg>
 <header>
   <h1>Controllo sala esercitazione</h1>
@@ -153,6 +154,7 @@
     <h2 id="tl-title">Timeline</h2>
     <div class="wbar" style="justify-content:flex-end">
       <button class="wbtn" id="tlview" type="button">Vista: conversazione</button>
+      <button class="wbtn" id="tlcopy" type="button" title="copia tutta la conversazione come testo semplice, per incollarla altrove"><svg class="ic" aria-hidden="true"><use href="#i-copy" xlink:href="#i-copy"/></svg> Copia conversazione</button>
     </div>
     <div class="meta-top" id="tl-meta">Seleziona una sessione a sinistra.</div>
     <ul class="tl" id="tl"><li class="empty">—</li></ul>
@@ -169,6 +171,8 @@ var OPEN = {};    // interazioni espanse (chiave "ts|kind"): l'auto-refresh
                   // ricostruisce il DOM, lo stato deve vivere fuori da esso
 var TL_CID = null; // sessione renderizzata nella timeline (cambio = reset espansioni)
 var VIEW = "tl";  // "tl" = timeline, "chat" = conversazione ricostruita dai delta
+var LAST_TL = null; // ultimo payload della timeline: è quello che «Copia
+                    // conversazione» trascrive, anche tra un poll e l'altro
 
 function ago(ts) {
   if (!ts) return "—";
@@ -249,6 +253,7 @@ function loadTimeline(cid) {
   document.getElementById("tl-meta").textContent = "caricamento…";
   fetch("/api/sessions/" + encodeURIComponent(cid)).then(function (r) { return r.json(); }).then(function (d) {
     var tl = document.getElementById("tl");
+    LAST_TL = d;
     document.getElementById("tl-meta").textContent =
       (d.interactions.length ? d.interactions.length : 0) + " interazioni · ultima " + ago(d.last_seen);
     if (!d.interactions.length) { tl.innerHTML = '<li class="empty">nessuna interazione</li>'; return; }
@@ -320,6 +325,83 @@ function renderConversation(d) {
       tl.appendChild(li);
     }
   });
+}
+
+/* ============ Copia conversazione ==========================================
+ * Richiesta dell'educatore: poter portare FUORI dal pannello tutta la
+ * conversazione appena letta (incollarla in una chat di supporto, in una
+ * relazione). Trascrizione testuale dalla stessa risposta della timeline:
+ * le chat come battute complete, le altre interazioni come righe di contorno
+ * coi soli metadati (l'HTML degli scaffold non serve nel transcript). */
+function conversationText(d) {
+  var hh = function (ts) { return new Date(ts * 1000).toLocaleTimeString(); };
+  var out = ["Laboratorio di Prompting — sessione " + d.client +
+    " · " + d.interactions.length +
+    (d.interactions.length === 1 ? " interazione" : " interazioni") +
+    " · copiata il " + new Date().toLocaleString(), ""];
+  d.interactions.forEach(function (it) {
+    if (it.kind === "chat") {
+      out.push("[" + hh(it.ts) + "] ragazzo:");
+      out.push(it.in || "—");
+      out.push("");
+      out.push("[" + hh(it.ts) + "] modello:" +
+        (it.turns ? " (" + it.turns + (it.turns === 1 ? " turno" : " turni") + ")" : "") +
+        (it.endpoint ? " (endpoint reale " + shortEp(it.endpoint) + ")" : "") +
+        (it.status >= 400 ? " (err " + it.status + ")" : ""));
+      out.push(it.out || "—");
+      out.push("");
+    } else {
+      out.push("[" + hh(it.ts) + "] — " + (it.kind || "?") + " · " + stepName(it.step) +
+        " · HTTP " + it.status + " · in " + (it.in_len || 0) + " car · out " + (it.out_len || 0) + " car");
+    }
+  });
+  return out.join("\n");
+}
+
+function showCopyModal(text) {
+  // ultima spiaggia onesta: la copia automatica è bloccata, la trascrizione
+  // resta sullo schermo da selezionare a mano (Ctrl-A / Ctrl-C)
+  var mod = document.createElement("div");
+  mod.className = "tracemod";
+  var box = document.createElement("div");
+  box.className = "box";
+  var x = document.createElement("button");
+  x.className = "x"; x.type = "button"; x.textContent = "✕";
+  x.onclick = function () { mod.remove(); };
+  var h = document.createElement("h3");
+  h.textContent = "Conversazione — copia automatica bloccata: seleziona e copia a mano";
+  var pre = document.createElement("pre");
+  pre.textContent = text;
+  box.appendChild(x); box.appendChild(h); box.appendChild(pre);
+  mod.appendChild(box);
+  mod.addEventListener("click", function (ev) { if (ev.target === mod) mod.remove(); });
+  document.body.appendChild(mod);
+}
+
+function copyConversation() {
+  var btn = document.getElementById("tlcopy");
+  var old = btn.innerHTML;
+  var back = function (txt) {
+    btn.textContent = txt;
+    setTimeout(function () { btn.innerHTML = old; }, 1600);
+  };
+  if (!LAST_TL || !LAST_TL.interactions.length) { back("Niente da copiare"); return; }
+  var text = conversationText(LAST_TL);
+  // LAN HTTP non è secure context: navigator.clipboard non esiste. Fallback
+  // classico: textarea temporanea fuori schermo + selezione + execCommand
+  // (stesso trucco del bottone Copia di code.html).
+  var ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  var ok = false;
+  try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+  document.body.removeChild(ta);
+  if (ok) back("Copiato");
+  else { back("Copia a mano"); showCopyModal(text); }
 }
 
 /* ============ Popup della trace LLM (change trace-llm) ====================
@@ -688,6 +770,7 @@ document.getElementById("wbar").addEventListener("click", function (ev) {
   if (t) setWindow(t.getAttribute("data-w"));
 });
 document.getElementById("tlview").addEventListener("click", toggleView);
+document.getElementById("tlcopy").addEventListener("click", copyConversation);
 document.getElementById("ipinput").addEventListener("keydown", function (e) {
   if (e.key === "Enter") {
     var v = e.target.value.trim();

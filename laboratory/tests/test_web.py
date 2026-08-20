@@ -300,8 +300,10 @@ class ChatBridgeTest(unittest.TestCase):
 
     def test_chat_step_token_caps(self) -> None:
         """Il tetto token è policy di tappa, decisa dal gateway via X-Step: lo
-        step "code" (laboratorio codice) ha il tetto dedicato a 4096, le tappe
-        ①–④ restano al regime difensivo di sempre (default 256, ceiling 768)."""
+        step "code" (laboratorio codice) ha il tetto dedicato a 4096, la tappa
+        ③ (skill) il doppio delle altre (chat libera pre-trigger: niente
+        risposte tagliate a metà frase), ①②④ restano al regime difensivo di
+        sempre (default 256, ceiling 768)."""
         _, body = self._post("/api/chat", {"messages": [{"role": "user", "content": "card"}]},
                              {"X-Step": "code"})
         self.assertEqual(body["trace"]["request"]["max_tokens"], 4096)
@@ -311,6 +313,10 @@ class ChatBridgeTest(unittest.TestCase):
         self.assertEqual(b1["trace"]["request"]["max_tokens"], 256)
         _, b2 = self._post("/api/chat", {"messages": [{"role": "user", "content": "x"}]})
         self.assertEqual(b2["trace"]["request"]["max_tokens"], 256)
+        # la ③ (skill) ha il tetto raddoppiato
+        _, b4 = self._post("/api/chat", {"messages": [{"role": "user", "content": "x"}]},
+                           {"X-Step": "3"})
+        self.assertEqual(b4["trace"]["request"]["max_tokens"], 512)
         # preferenza esplicita del client: rispettata e clampata come prima
         _, b3 = self._post("/api/chat",
                            {"messages": [{"role": "user", "content": "x"}], "max_tokens": 100},
@@ -768,7 +774,7 @@ class CodeLabPolicyTest(unittest.TestCase):
     # --- 1.1: tetto dedicato ------------------------------------------------
     def test_code_step_default_and_clamp(self) -> None:
         """Il tetto della tappa code è 4096 (default e ceiling dedicati); per
-        le tappe ①–④ il regime non cambia: default 256, ceiling 768."""
+        le tappe ①②④ il regime non cambia: default 256, ceiling 768."""
         _, b = self._post("/api/chat", self._msgs(), {"X-Step": "code"})
         self.assertEqual(b["trace"]["request"]["max_tokens"], 4096)
         # preferenza esplicita del client rispettata...
@@ -1434,6 +1440,22 @@ class AdminPageTest(unittest.TestCase):
         self.assertIn("msg user", body)            # bolle 👤/🤖
         self.assertIn("msg ai", body)
 
+    def test_conversation_copy_button(self) -> None:
+        """Richiesta dell'educatore: la conversazione letta nel pannello si
+        copia IN TOTO come testo, per incollarla altrove (supporto remoto,
+        relazioni). Trascrizione testuale dalla stessa risposta della timeline
+        (nessun round-trip), fallback textarea + execCommand perché la LAN
+        HTTP non è secure context, popup selezionabile a mano se anche quello
+        è bloccato."""
+        body = self._read()
+        self.assertIn('id="tlcopy"', body)           # bottone accanto al toggle
+        self.assertIn("conversationText", body)      # trascrizione testuale
+        self.assertIn("execCommand", body)           # fallback secure context
+        self.assertIn("LAST_TL", body)               # dati tra un poll e l'altro
+        self.assertIn("] ragazzo:", body)            # le battute complete
+        self.assertIn("] modello:", body)
+        self.assertIn('symbol id="i-copy"', body)    # icona SVG (niente emoji)
+
     def test_open_state_preserved_across_refresh(self) -> None:
         """L'auto-refresh ricostruisce il DOM ogni 3s: lo stato "espansa" di una
         interazione vive in una mappa lato JS e viene riapplicato al re-render,
@@ -1835,8 +1857,12 @@ class ContextMemoryPageTest(unittest.TestCase):
     def test_displayed_limits_match_gateway_defaults(self) -> None:
         # i valori mostrati devono essere quelli che il gateway applica davvero
         body = self._read()
-        self.assertIn("_CHAT_DEFAULT_MAX_TOKENS = 256", self._gateway_src())
+        gw = self._gateway_src()
+        self.assertIn("_CHAT_DEFAULT_MAX_TOKENS = 256", gw)
         self.assertIn("opts.maxOut || 256", body)    # default pagina = default gateway
+        # la tappa ③ dichiara il suo tetto raddoppiato, non il default
+        self.assertIn('"3": 512', gw)
+        self.assertIn("maxOut: 512", body)
 
     def test_truncated_reply_note(self) -> None:
         # nota ✂️ quando la risposta è tagliata dal tetto token: verdetto da
