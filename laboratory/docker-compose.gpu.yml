@@ -1,0 +1,66 @@
+# Host-GPU: override per deployare lo STESSO stack su un server in LAN con GPU
+# NVIDIA (RTX A2000) come terzo host alternativo al mini PC (stesso pattern del
+# Pi: profilo, non fork). L'inferenza gira sull'acceleratore, tutto il resto è
+# quello del base.
+#
+# Uso (da laboratory/, GGUF in models/):
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml \
+#     --profile model --profile coder up
+#   (o: make gpu-up)
+#
+# Vincoli dichiarati:
+#   - questo server ha SOLO ruolo di host del laboratorio: mai training/
+#     fine-tuning (resta su Colab, change `fine-tuning` separato).
+#   - modelli INVARIATI rispetto al mini PC (main e coder 1.5B Q4_K_M, i
+#     default del base): il profilo GPU cambia COME si serve, non COSA.
+#   - budget VRAM ~<4 GB al picco: pesi ~2,1 GB (due Q4_K_M da ~1 GB) + KV
+#     (~690 MB) + contesti CUDA ~0,6–1 GB → ci sta nella A2000 da 6 GB con
+#     margine. Da confermare con `nvidia-smi` sull'HOST sotto loadtest.
+#   - prerequisiti sull'host: driver NVIDIA funzionante (`nvidia-smi`) e
+#     nvidia-container-toolkit. Senza toolkit Docker rifiuta l'avvio dei due
+#     servizi modello → fallimento VISIBILE all'avvio, mai degrado silenzioso
+#     su CPU.
+#   - l'offload completo dei layer (-ngl 99) si verifica dai LOG del server
+#     («offloaded N/N layers to GPU»), non da nvidia-smi nel container: nelle
+#     immagini runtime può mancare; nvidia-smi si usa sull'HOST per il budget.
+#
+# Slot paralleli SOLO sul main: in llama.cpp -c è il contesto TOTALE diviso
+# tra gli slot → -np 8 -c 16384 = 8 slot × 2048: la finestra per ragazzo resta
+# quella dichiarata ai client (LLAMA_CTX=2048, la pagina non cambia una riga)
+# e tutta la classe invia insieme senza coda. Il coder resta a slot singolo
+# (-c 8192): le postazioni codice sono abilitate dall'educatore caso per caso.
+# Niente -t sul main: i thread host non sono più la leva, conta lo slot.
+
+services:
+  llama:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    # command sostituito PER INTERO (override scalare del compose): aggiunge
+    # -ngl 99 (offload totale) e gli slot paralleli; il resto eredita dal base
+    # (porte, volumi, healthcheck — quest'ultimo verificato al primo avvio).
+    command: >
+      -m /models/${MODEL_FILE:-qwen2.5-1.5b-instruct-q4_k_m.gguf}
+      --host 0.0.0.0 --port 8081
+      -ngl 99 -np 8 -c 16384 --temp 0.2
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  llama-coder:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    # slot singolo come nel base (-c 8192): cambia solo immagine, -ngl 99 e
+    # la reservation GPU.
+    command: >
+      -m /models/${CODER_FILE:-qwen2.5-coder-1.5b-instruct-q4_k_m.gguf}
+      --host 0.0.0.0 --port 8082
+      -ngl 99 -t 4 -c 8192 --temp 0.2
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

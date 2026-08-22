@@ -74,10 +74,51 @@ termina naturalmente producendo uno scaffold valido.
 
 Vedi `docker-compose.yml` per la versione containerizzata. Topologia a 3 tier:
 nginx (statici + proxy `/api/*`) → gateway (`backend.gateway`) → skill/llama.
-L'host è sostituibile: **mini PC** (modello 1.5B + coder, `make up`) **oppure
-Pi 3 / 1 GB** (0.5B obbligatorio, `make pi-up` — override `docker-compose.pi.yml`,
-senza coder); i client cambiano solo l'indirizzo. `spike/REPORT.md` ha i
-numeri di fattibilità misurati (tok/s, RAM).
+L'host è sostituibile: **mini PC** (modello 1.5B + coder, `make up`), **Pi 3 /
+1 GB** (0.5B obbligatorio, `make pi-up` — override `docker-compose.pi.yml`,
+senza coder) **oppure server GPU in LAN** (`make gpu-up`, vedi sotto); i client
+cambiano solo l'indirizzo. `spike/REPORT.md` ha i numeri di fattibilità
+misurati (tok/s, RAM).
+
+### Avvio su server GPU (`make gpu-up`)
+
+Terzo host alternativo: un server in LAN con GPU NVIDIA (in campo: RTX A2000).
+Stack, modelli (**INVARIATI**: 1.5B main + coder 1.5B Q4_K_M), porte e pagina
+sono quelli del mini PC — cambia solo dove gira l'inferenza. Il main serve su
+**slot paralleli** (`-np 8`, contesto totale 16384 = 8 × 2048: la finestra per
+ragazzo resta quella dichiarata ai client, `LLAMA_CTX=2048` — la pagina non
+cambia una riga): tutta la classe invia insieme senza coda. Il coder resta a
+slot singolo (`-c 8192`).
+
+```bash
+# 1) prerequisiti sull'host (una tantum): driver NVIDIA funzionante
+#    (`nvidia-smi` risponde) + nvidia-container-toolkit installato
+# 2) scaricare le immagini PRIMA del campo: quella CUDA pesa GB (contro
+#    ~200 MB della CPU); il build delle immagini Python (gateway/skill)
+#    avviene al primo avvio. Stesse -f di gpu-up:
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml \
+  --profile model --profile coder pull
+# 3) avvio (GGUF in models/, come al solito):
+make gpu-up
+# 4) prova dell'offload: nei log dei due llama deve comparire
+#    «offloaded N/N layers to GPU» — la prova è questa, non nvidia-smi
+#    nel container (nelle immagini runtime può mancare):
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml \
+  --profile model --profile coder logs llama llama-coder | grep -i offloaded
+```
+
+I client si collegano come per gli altri host cambiando solo l'indirizzo:
+pagina `http://<gpu-host>:8090`, CLI `--remote http://<gpu-host>:8080`, modello
+grezzo per consumer fidati su `:8081`. Su un host privo di driver NVIDIA o di
+`nvidia-container-toolkit` l'avvio dei due servizi modello fallisce **subito**
+con errore Docker esplicito — `could not select device driver "nvidia" with
+capabilities: [[gpu]]` — mai un degrado silenzioso su CPU. Budget VRAM
+dichiarato: **~< 4 GB al
+picco** (pesi ~2,1 GB + KV ~690 MB + contesti CUDA) — ci sta nella A2000 da
+6 GB con margine; da confermare con `nvidia-smi` **sull'host** durante
+`make loadtest N=8 URL=http://<gpu-host>:8090` (se stretto: ridurre `-np` in
+`docker-compose.gpu.yml`). Fermare tutto con `make down` — anche i container
+nati dall'override (`--remove-orphans`).
 
 ## Test
 

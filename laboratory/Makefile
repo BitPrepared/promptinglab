@@ -11,6 +11,7 @@
 #   make demo        avvia in modalità demo (mock, senza modelli)
 #   make rebuild     ricostruisce le immagini e riparte coi modelli
 #   make down        ferma tutto (pulendo anche i llama)
+#   make gpu-up      terzo host: server GPU in LAN (docker-compose.gpu.yml)
 #   make help        tutti i target
 
 # --- Variabili (sovrascrivibili: make up MODEL_FILE=... ) ---------------------
@@ -23,13 +24,17 @@ COMPOSE     := docker compose
 # Il Pi 3 non attiva il coder: pi-up dichiara il profilo da solo, sotto.
 PROFILE     := --profile model --profile coder
 PROFILE_PI  := --profile model
+# Host GPU in LAN (docker-compose.gpu.yml): stessi profili di `up`, immagine
+# CUDA e reservation GPU sull'override (sull'host servono driver NVIDIA +
+# nvidia-container-toolkit).
+PROFILE_GPU := -f docker-compose.yml -f docker-compose.gpu.yml $(PROFILE)
 URL     ?= http://localhost:8090
 N       ?= 8
 TURNS   ?= 4
 RETRY   ?= 0
 
 .DEFAULT_GOAL := help
-.PHONY: help up pi-up demo down rebuild logs admin open status ps test clean clean-sessions loadtest pull
+.PHONY: help up pi-up gpu-up demo down rebuild logs admin open status ps test clean clean-sessions loadtest pull
 
 help:  ## mostra questo aiuto
 	@echo "Laboratorio web — target disponibili:"
@@ -37,6 +42,8 @@ help:  ## mostra questo aiuto
 	@echo "                 [richiede MODEL_FILE=$(MODEL_FILE) e CODER_FILE=$(CODER_FILE) in models/]"
 	@echo "  make demo      avvia in DEMO (mock, senza modello — chat ①–④ off, skill on)"
 	@echo "  make pi-up     come up ma per host Pi 3 (0.5B obbligatorio, SENZA coder)"
+	@echo "  make gpu-up    come up ma per server GPU in LAN (immagini CUDA, slot"
+	@echo "                 paralleli sul main; richiede driver NVIDIA + nvidia-container-toolkit)"
 	@echo "  make rebuild   ricostruisce le immagini (codice Python) e riparte coi modelli"
 	@echo "  make down      ferma e rimuove tutti i container (anche i due llama)"
 	@echo "  make clean-sessions  azzera lo storico delle sessioni (ferma il gateway)"
@@ -59,6 +66,9 @@ up:  ## avvia con ENTRAMBI i modelli (main + coder; richiede i GGUF in models/)
 
 pi-up:  ## avvia col modello per host Pi 3 (0.5B obbligatorio, vedi docker-compose.pi.yml; niente coder)
 	$(COMPOSE) -f docker-compose.yml -f docker-compose.pi.yml $(PROFILE_PI) up
+
+gpu-up:  ## avvia su server GPU in LAN (stessi modelli di up, inferenza su NVIDIA; vedi docker-compose.gpu.yml)
+	MODEL_FILE=$(MODEL_FILE) CODER_FILE=$(CODER_FILE) $(COMPOSE) $(PROFILE_GPU) up
 
 demo:  ## avvia in demo (mock, senza modelli)
 	$(COMPOSE) up web gateway skill
