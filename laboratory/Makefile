@@ -12,6 +12,8 @@
 #   make rebuild     ricostruisce le immagini e riparte coi modelli
 #   make down        ferma tutto (pulendo anche i llama)
 #   make gpu-up      terzo host: server GPU in LAN (docker-compose.gpu.yml)
+#   make push        pubblica gateway/skill sul mirror LAN (registry zot)
+#   make init        prepara il builder buildx per il push (una tantum)
 #   make help        tutti i target
 
 # --- Variabili (sovrascrivibili: make up MODEL_FILE=... ) ---------------------
@@ -28,13 +30,21 @@ PROFILE_PI  := --profile model
 # CUDA e reservation GPU sull'override (sull'host servono driver NVIDIA +
 # nvidia-container-toolkit).
 PROFILE_GPU := -f docker-compose.yml -f docker-compose.gpu.yml $(PROFILE)
+# Mirror LAN delle immagini (zot, OCI-compatibile): `make push` pubblica qui
+# gateway/skill. Sulla 5000 il registro parla HTTP PLAIN: il daemon dei client
+# lo dichiara in insecure-registries (pull), il builder buildx di `make init`
+# lo dichiara col buildkitd config (push) — vedi README «Registry LAN».
+REGISTRY    ?= mirror.costigiola.bitprepared.it:5000
+PUSH_TAG    ?= latest
+BUILDX_BUILDER ?= zotbuilder
+BUILDKIT_CFG   ?= $(HOME)/.config/buildkit/zot.toml
 URL     ?= http://localhost:8090
 N       ?= 8
 TURNS   ?= 4
 RETRY   ?= 0
 
 .DEFAULT_GOAL := help
-.PHONY: help up pi-up gpu-up demo down rebuild logs admin open status ps test clean clean-sessions loadtest pull
+.PHONY: help up pi-up gpu-up demo down rebuild logs admin open status ps test clean clean-sessions loadtest pull push init
 
 help:  ## mostra questo aiuto
 	@echo "Laboratorio web — target disponibili:"
@@ -56,6 +66,9 @@ help:  ## mostra questo aiuto
 	@echo "  make test      suite di test (python unittest)"
 	@echo "  make clean     ferma + pulisce container orfani e reti dangling"
 	@echo "  make pull      scarica l'immagine llama.cpp"
+	@echo "  make push      builda gateway/skill e li pubblica sul mirror LAN"
+	@echo "                 [REGISTRY=$(REGISTRY) PUSH_TAG=$(PUSH_TAG)]"
+	@echo "  make init      prepara il builder buildx per il push (una tantum, prima di push)"
 	@echo ""
 	@echo "Variabili:"
 	@echo "  MODEL_FILE=qwen2.5-0.5b-instruct-q4_k_m.gguf   cambia GGUF main (0.5b/1.5b)"
@@ -113,3 +126,22 @@ clean-sessions:  ## azzera lo storico delle sessioni (ferma il gateway, rimuove 
 
 pull:  ## scarica l'immagine llama.cpp (server CPU)
 	$(COMPOSE) $(PROFILE) pull
+
+# Il mirror zot di campo respinge i manifest schema2 mandati dallo store del
+# daemon («manifest invalid»): si pusha direttamente da buildx con mediatype
+# OCI esplicito (indicazione dei maintainer zot). Richiede il builder creato
+# da `make init` (trasporto HTTP dichiarato al buildkit container). Due
+# invocazioni perché i servizi hanno nomi immagine diversi — il secondo build
+# esce dalla cache.
+init:  ## prepara il builder buildx per il push sul mirror (una tantum, vedi README «Registry LAN»)
+	mkdir -p $(dir $(BUILDKIT_CFG))
+	printf '[registry."$(REGISTRY)"]\n  http = true\n' > $(BUILDKIT_CFG)
+	-@docker buildx inspect $(BUILDX_BUILDER) >/dev/null 2>&1 && docker buildx rm $(BUILDX_BUILDER) || true
+	docker buildx create --use --name $(BUILDX_BUILDER) --buildkitd-config $(BUILDKIT_CFG)
+	@echo "Builder '$(BUILDX_BUILDER)' attivo (config: $(BUILDKIT_CFG)). Ora: make push"
+
+push:  ## builda gateway/skill e li pubblica sul mirror LAN (vedi README «Registry LAN»)
+	docker buildx build --output type=image,oci-mediatypes=true \
+	  -t $(REGISTRY)/bitprepared/diariobot-gateway:$(PUSH_TAG) --push .
+	docker buildx build --output type=image,oci-mediatypes=true \
+	  -t $(REGISTRY)/bitprepared/diariobot-skill:$(PUSH_TAG) --push .

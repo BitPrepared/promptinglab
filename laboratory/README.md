@@ -120,6 +120,69 @@ picco** (pesi ~2,1 GB + KV ~690 MB + contesti CUDA) — ci sta nella A2000 da
 `docker-compose.gpu.yml`). Fermare tutto con `make down` — anche i container
 nati dall'override (`--remove-orphans`).
 
+## Registry LAN per le immagini (zot)
+
+Il campo è offline: le immagini si preparano dove c'è rete e si distribuiscono
+sulla LAN con un registry self-hosted. Va bene qualunque registry
+OCI-compliant; qui [zot](https://zotregistry.dev) (sandbox CNCF). I GGUF
+**non** passano dal registro (restano montati da `./models/`): ci finiscono
+solo le immagini Python (gateway/skill) e, se attivate, le immagini llama.cpp
+in mirror.
+
+```bash
+# 1) avvio zot su un host sempre acceso della LAN (es. mini PC):
+docker run -d --name zot -p 5000:5000 \
+  -v /srv/zot/storage:/var/lib/registry \
+  -v ./config.json:/etc/zot/config.json:ro \
+  ghcr.io/project-zot/zot-linux-amd64:latest
+#    la porta 5000 parla HTTP PLAIN: ogni host che fa PULL dichiara il mirror
+#    in /etc/docker/daemon.json →
+#    { "insecure-registries": ["mirror.costigiola.bitprepared.it:5000"] }
+# 2) sull'host che PUBBLICA, una tantum: crea il builder buildx col trasporto
+#    HTTP del registro dichiarato:
+make init
+# 3) pubblica le immagini del laboratorio (builda gateway/skill e le spinge;
+#    destinazione/tag sono variabili: REGISTRY=... PUSH_TAG=campo-2026 make push):
+make push
+# 4) sugli altri host: riprendile e ri-tagga coi nomi che i compose si aspettano
+#    (il push conserva il namespace bitprepared/: si scambia solo il prefix):
+docker pull mirror.costigiola.bitprepared.it:5000/bitprepared/diariobot-gateway:latest
+docker tag  mirror.costigiola.bitprepared.it:5000/bitprepared/diariobot-gateway:latest bitprepared/diariobot-gateway:latest
+docker pull mirror.costigiola.bitprepared.it:5000/bitprepared/diariobot-skill:latest
+docker tag  mirror.costigiola.bitprepared.it:5000/bitprepared/diariobot-skill:latest bitprepared/diariobot-skill:latest
+```
+
+Note operative:
+
+- **HTTP plain, dichiarato in due posti**: la porta 5000 non parla TLS — i
+  daemon dei client hanno il mirror in `insecure-registries` (serve al pull),
+  e `make init` scrive `http = true` nel config del builder buildx `zotbuilder`
+  (serve al push). Se un domani mettete TLS davanti a zot, bastano due righe
+  da togliere.
+- **Manifest OCI**: questo zot rifiuta i manifest schema2 mandati dallo store
+  del demone («manifest invalid») — per questo `make push` passa da buildx con
+  `--output type=image,oci-mediatypes=true` invece di un semplice `docker push`.
+- **Mirror dell'immagine llama.cpp** — consigliato per il profilo GPU (GB):
+  l'estensione *sync* di zot replica upstream (es. `ghcr.io/ggml-org`) dentro
+  il registro su schedule. La scarichi una volta sola dove c'è rete, poi tutti
+  gli host fanno pull dalla LAN — coerente col vincolo «il download va fatto
+  dove c'è rete».
+- **Push chiuso, pull aperto**: zot gira anche senza autenticazione; nella LAN
+  fidata è accettabile, ma conviene almeno proteggere il push (htpasswd o API
+  key nel config).
+- **Multi-arch**: zot supporta OCI image index — se mai servisse pre-pubblicare
+  un'immagine arm/v7 per il Pi:
+  `docker buildx build --platform linux/arm/v7 --push`. Oggi il Pi builda in
+  loco (python-slim è multi-arch, vedi sopra): non serve.
+- **Errori tipici, cura rapida** (verificati al primo setup):
+  «manifest invalid» spingendo col demone (`docker push` diretto) → non è la
+  via: quel zot vuole manifest OCI, si usa `make push`;
+  «server gave HTTP response to HTTPS client» durante `make push` → il builder
+  non conosce il trasporto del registro: rilanciare `make init` (obbligatorio
+  anche dopo un cambio di `REGISTRY`);
+  pull rifiutato dal daemon di un client → manca la voce in
+  `insecure-registries`.
+
 ## Test
 
 ```bash

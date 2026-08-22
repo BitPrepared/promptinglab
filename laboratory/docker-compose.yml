@@ -23,8 +23,8 @@ services:
   web:
     image: nginx:alpine           # tier 1: solo presentazione (~5 MB)
     ports:
-      #- "80:80"                    # unico punto d'ingresso per la pagina se 80 libera
-      - "8090:80"                 # unico punto d'ingresso per la pagina
+      - "80:80"                    # unico punto d'ingresso per la pagina se 80 libera
+      #- "8090:80"                 # unico punto d'ingresso per la pagina
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./backend/web/static:/usr/share/nginx/html:ro
